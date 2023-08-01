@@ -132,7 +132,7 @@ func (tf *TmysqlParseFile) Do(dbtype string) (result map[string]*CheckInfo, err 
 		logger.Error("failed to execute tmysqlparse: %s", err.Error())
 		return nil, err
 	}
-	logger.Info("err is %v", err)
+	logger.Info("filemap %v", tf.fileMap)
 	// 对tmysqlparse的处理结果进行分析，为json文件，后面用到了rule
 	mysqlVersion := tf.Param.MysqlVersion
 	if err = tf.AnalyzeParseResult(mysqlVersion, dbtype); err != nil {
@@ -239,11 +239,10 @@ func (t *TmysqlParse) AnalyzeParseResult(mysqlVersion string, dbtype string) (er
 	var errs []string
 	c := make(chan struct{}, 10)
 	// 开启多个线程，同时对多个sql文件进行分析
-	for idx, inputFileName := range t.fileMap {
-		logger.Info("make 0001")
+	for inputFileName := range t.fileMap {
 		wg.Add(1)
 		c <- struct{}{}
-		logger.Info("idx %d, start to analyze %s", idx, inputFileName)
+		logger.Info("start to analyze %s", inputFileName)
 		go func(fileName string) {
 			err = t.AnalyzeOne(fileName, mysqlVersion, dbtype)
 			if err != nil {
