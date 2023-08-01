@@ -88,8 +88,6 @@ type RiskInfo struct {
 	WarnInfo    string `json:"warn_info"`
 }
 
-var lock sync.Mutex
-
 // DoSQL TODO
 func (tf *TmysqlParseFile) DoSQL(dbtype string) (result map[string]*CheckInfo, err error) {
 	tf.fileMap = make(map[inputFileName]outputFileName)
@@ -241,9 +239,11 @@ func (t *TmysqlParse) AnalyzeParseResult(mysqlVersion string, dbtype string) (er
 	var errs []string
 	c := make(chan struct{}, 10)
 	// 开启多个线程，同时对多个sql文件进行分析
-	for inputFileName := range t.fileMap {
+	for idx, inputFileName := range t.fileMap {
+		logger.Info("make 0001")
 		wg.Add(1)
 		c <- struct{}{}
+		logger.Info("idx %d, start to analyze %s", idx, inputFileName)
 		go func(fileName string) {
 			err = t.AnalyzeOne(fileName, mysqlVersion, dbtype)
 			if err != nil {
@@ -251,12 +251,16 @@ func (t *TmysqlParse) AnalyzeParseResult(mysqlVersion string, dbtype string) (er
 			}
 			<-c
 			wg.Done()
+			logger.Info("make 000222")
 		}(inputFileName)
 	}
+	logger.Info("make 0003333")
 	wg.Wait()
+	logger.Info("make 004444")
 	if len(errs) > 0 {
 		return fmt.Errorf("errors: %s", strings.Join(errs, "\n"))
 	}
+	logger.Info("make 0003asdasd")
 	return err
 }
 
@@ -292,7 +296,9 @@ func (tf *TmysqlParse) AnalyzeOne(inputfileName string, mysqlVersion string, dbt
 			err = fmt.Errorf("line:%d,err:%v", idx, r)
 		}
 	}()
+	lock := &sync.Mutex{}
 	lock.Lock()
+	logger.Info("start to analyze %s", inputfileName)
 	tf.result[inputfileName] = &CheckInfo{}
 	f, err := os.Open(tf.getAbsoutputfilePath(inputfileName))
 	if err != nil {
