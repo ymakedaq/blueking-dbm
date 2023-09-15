@@ -19,6 +19,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"time"
 
 	"dbm-services/common/go-pubpkg/cmutil"
 	"dbm-services/common/go-pubpkg/logger"
@@ -67,6 +68,8 @@ type ExcuteSQLFileRunTimeCtx struct {
 	taskdir              string
 	RegularIgnoreDbNames []string
 	RegularDbNames       []string
+	startTime            time.Time
+	endTime              time.Time
 }
 
 // Example TODO
@@ -94,10 +97,10 @@ func (e *ExcuteSQLFileComp) Example() interface{} {
 // Init TODO
 func (e *ExcuteSQLFileComp) Init() (err error) {
 	e.ports = make([]int, len(e.Params.Ports))
-	e.dbConns = make(map[int]*native.DbWorker)
-	e.vermap = make(map[int]string)
-	e.socketmap = make(map[int]string)
-	e.charsetmap = make(map[int]string)
+	e.dbConns = make(map[Port]*native.DbWorker)
+	e.vermap = make(map[Port]string)
+	e.socketmap = make(map[Port]string)
+	e.charsetmap = make(map[Port]string)
 
 	copy(e.ports, e.Params.Ports)
 	for _, port := range e.ports {
@@ -146,12 +149,14 @@ func (e *ExcuteSQLFileComp) Init() (err error) {
 
 // Excute TODO
 func (e *ExcuteSQLFileComp) Excute() (err error) {
+	e.startTime = time.Now()
 	for _, port := range e.ports {
 		if err = e.excuteOne(port); err != nil {
 			logger.Error("execute at %d failed: %s", port, err.Error())
 			return err
 		}
 	}
+	e.endTime = time.Now()
 	return nil
 }
 
@@ -237,6 +242,33 @@ func (e *ExcuteSQLFileComp) match(dbsExculeSysdb, regularDbNames []string) (matc
 			if re.MatchString(db) {
 				matched = append(matched, db)
 			}
+		}
+	}
+	return
+}
+
+// UpdateDefiner update produce trigger definer
+// 因为执行SQL导入的是随机账户,随机账户执行成就会回收
+// 需要将存储过程、触发器等相关的definer改成本地账户
+func (e *ExcuteSQLFileComp) UpdateDefiner() (err error) {
+	for _, port := range e.ports {
+		conn, ok := e.dbConns[port]
+		if !ok {
+			return fmt.Errorf("没有找到%d的初始化连接", port)
+		}
+		// update produce func definer
+		_, err = conn.GetSqlxDb().Exec("update mysql.proc set definer=? where db in (?) and created >= ? and  created <= ? ",
+			"ADMIN@localhost", e.startTime, e.endTime)
+		if err != nil {
+			logger.Error("update produce func definer failed:%s", err.Error())
+			return err
+		}
+		// update event definer
+		_, err = conn.GetSqlxDb().Exec("update mysql.event set definer=? where db in (?) and created >= ? and  created <= ? ",
+			"ADMIN@localhost", e.startTime, e.endTime)
+		if err != nil {
+			logger.Error("update event func definer failed:%s", err.Error())
+			return err
 		}
 	}
 	return
