@@ -120,6 +120,14 @@ func (c *CheckerResult) ParseBultinBan(f func() (bool, string)) {
 	}
 }
 
+// ParseBultinWarn 内建规则，只需配置开启或者关闭即可
+func (c *CheckerResult) ParseBultinWarn(f func() (bool, string)) {
+	matched, msg := f()
+	if matched {
+		c.RiskWarns = append(c.RiskWarns, msg)
+	}
+}
+
 // RuleItem TODO
 type RuleItem struct {
 	Item        interface{} `yaml:"item"`

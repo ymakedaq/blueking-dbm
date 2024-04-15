@@ -18,13 +18,13 @@ import (
 	"dbm-services/common/go-pubpkg/logger"
 )
 
-// Checker TODO
+// Checker create table rule checker
 func (c CreateTableResult) Checker(mysqlVersion string) (r *CheckerResult) {
 	r = &CheckerResult{}
 	r.Parse(R.CreateTableRule.SuggestEngine, c.GetEngine(), "")
 	r.Parse(R.CreateTableRule.SuggestBlobColumCount, c.BlobColumCount(), "")
 	if R.BuiltInRule.TableNameSpecification.KeyWord {
-		r.ParseBultinBan(func() (bool, string) {
+		r.ParseBultinWarn(func() (bool, string) {
 			return KeyWordValidator(mysqlVersion, c.TableName)
 		})
 	}
@@ -36,8 +36,7 @@ func (c CreateTableResult) Checker(mysqlVersion string) (r *CheckerResult) {
 	return
 }
 
-// BlobColumCount TODO
-// ExceedMaxBlobColum 检查创建表时blob/text字段最大数，是否超过
+// BlobColumCount ExceedMaxBlobColum 检查创建表时blob/text字段最大数，是否超过
 func (c CreateTableResult) BlobColumCount() (blobColumCount int) {
 	for _, v := range c.CreateDefinitions.ColDefs {
 		if v.Type == "blob" {
