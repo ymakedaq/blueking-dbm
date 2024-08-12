@@ -173,12 +173,7 @@ func (c *MachineResourceGetterInputParam) queryBs(db *gorm.DB) (err error) {
 		db.Where("bk_cloud_id in (?) ", c.BkCloudIds)
 	}
 	if len(c.RsTypes) > 0 {
-		// 如果参数["all"],表示选择没有任何资源类型标签的资源
-		if c.RsTypes[0] == "all" {
-			db.Where("JSON_LENGTH(rs_types) <= 0")
-		} else {
-			db.Where("(?)", model.JSONQuery("rs_types").JointOrContains(c.RsTypes))
-		}
+		db.Where("rs_type in (?) ", c.RsTypes)
 	}
 	c.matchSpec(db)
 	c.matchStorageSpecs(db)
@@ -195,11 +190,7 @@ func (c *MachineResourceGetterInputParam) queryBs(db *gorm.DB) (err error) {
 
 	if len(c.ForBizs) > 0 {
 		// 如果参数[0],表示选择没有任何业务标签的资源
-		if c.ForBizs[0] == 0 {
-			db.Where("JSON_LENGTH(dedicated_bizs) <= 0")
-		} else {
-			db.Where("(?)", model.JSONQuery("dedicated_bizs").JointOrContains(cmutil.IntSliceToStrSlice(c.ForBizs)))
-		}
+		db.Where(" dedicated_biz in (?) ", c.ForBizs)
 	}
 	if cmutil.IsNotEmpty(c.OsType) {
 		db.Where("os_type = ?", c.OsType)

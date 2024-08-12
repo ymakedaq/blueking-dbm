@@ -14,7 +14,6 @@ package apply
 import (
 	"fmt"
 	"path"
-	"strconv"
 	"strings"
 
 	"dbm-services/common/db-resource/internal/config"
@@ -129,18 +128,17 @@ func (o *SearchContext) pickBase(db *gorm.DB) {
 
 	// 如果没有指定资源类型，表示只能选择无资源类型标签的资源
 	// 没有资源类型标签的资源可以被所有其他类型使用
-	if cmutil.IsEmpty(o.RsType) {
-		db.Where("JSON_LENGTH(rs_types) <= 0")
+	if lo.IsEmpty(o.RsType) {
+		db.Where("rs_type == 'PUBLIC' ")
 	} else {
-		db.Where("? or JSON_LENGTH(rs_types) <= 0 ", model.JSONQuery("rs_types").Contains([]string{o.RsType}))
+		db.Where("rs_type in (?)", []string{"PUBLIC", o.RsType})
 	}
 	// 如果没有指定专属业务，就表示只能选用公共的资源
 	// 不能匹配打了业务标签的资源
 	if o.IntetionBkBizId <= 0 {
-		db.Where("JSON_LENGTH(dedicated_bizs) <= 0")
+		db.Where("dedicated_biz == 0")
 	} else {
-		db.Where("? or JSON_LENGTH(dedicated_bizs) <= 0", model.JSONQuery("dedicated_bizs").Contains([]string{
-			strconv.Itoa(o.IntetionBkBizId)}))
+		db.Where("dedicated_biz in (?)", []int{0, o.IntetionBkBizId})
 	}
 	o.MatchLables(db)
 	o.MatchLocationSpec(db)
