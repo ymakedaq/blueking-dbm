@@ -22,8 +22,12 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"dbm-services/common/go-pubpkg/apm/metric"
 	"dbm-services/common/go-pubpkg/apm/trace"
@@ -74,9 +78,31 @@ func main() {
 	registerCrontab(lcron)
 	lcron.Start()
 	defer lcron.Stop()
-	if err := engine.Run(config.AppConfig.ListenAddress); err != nil {
-		logger.Error("start  run failed %v", err)
+	srv := &http.Server{
+		Addr:    config.AppConfig.ListenAddress,
+		Handler: engine,
 	}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("listen: %s\n", err)
+		}
+	}()
+	// Wait for interrupt signal to gracefully shutdown the server with
+	// a timeout of 5 seconds.
+	quit := make(chan os.Signal, 1)
+	// kill (no param) default send syscall.SIGTERM
+	// kill -2 is syscall.SIGINT
+	// kill -9 is syscall.SIGKILL but can't be catch, so don't need add it
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	logger.Info("Shutting down server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		//nolint
+		logger.Fatal("Server forced to shutdown: %v ", err)
+	}
+	logger.Info("Server exiting\n")
 }
 
 // init init logger

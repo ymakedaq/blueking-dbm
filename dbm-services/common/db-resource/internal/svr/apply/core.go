@@ -269,30 +269,31 @@ func (c *PickerObject) DebugDistrubuteLog() {
 	}
 }
 
-// func (c *PickerObject) deleteElement(key string, bkhostId int) {
-// 	var k []InstanceObject
-// 	for _, v := range c.PickeElements[key] {
-// 		if v.BkHostId != bkhostId {
-// 			k = append(k, v)
-// 		}
-// 	}
-// 	c.PickeElements[key] = k
-// }
+// PreselectedSatisfiedInstance eoccupy the instances that meet the conditions first and change the resource status
+func (c *PickerObject) PreselectedSatisfiedInstance() (err error) {
+	tx := model.DB.Self.Begin()
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+	// update preselected status
+	results := tx.Table(model.TbRpDetailName()).Where("id in (?)", c.SatisfiedHostIds).Update("status",
+		model.Preselected)
 
-// PreselectedSatisfiedInstance TODO
-func (c *PickerObject) PreselectedSatisfiedInstance() error {
-	affectRows, err := model.UpdateTbRpDetail(c.SatisfiedHostIds, model.Preselected)
-	if err != nil {
+	if results.Error != nil {
+		logger.Error("update preselected status failed %s ", results.Error.Error())
 		return err
 	}
-	if int(affectRows) != len(c.SatisfiedHostIds) {
+	// check update success
+	if int(results.RowsAffected) != len(c.SatisfiedHostIds) {
 		return fmt.Errorf("update %d qualified resouece to preselectd,only %d real update status", len(c.SatisfiedHostIds),
-			affectRows)
+			results.RowsAffected)
 	}
-	return nil
+	return tx.Commit().Error
 }
 
-// RollbackUnusedInstance TODO
+// RollbackUnusedInstance release pre occupied resources
 func (c *PickerObject) RollbackUnusedInstance() error {
 	return model.UpdateTbRpDetailStatusAtSelling(c.SatisfiedHostIds, model.Unused)
 }
@@ -324,30 +325,7 @@ func (pw CampusWrapper) Less(i, j int) bool {
 	return pw.by(&pw.Campus[i], &pw.Campus[j])
 }
 
-// sortSubZone 根据排序剩下有效的园区
-// func (c *PickerObject) sortSubZone(cross_subzone bool) []string {
-// 	var keys []string
-// 	var campusNice []CampusNice
-// 	for key, campusIntances := range c.PickeElements {
-// 		//	keys = append(keys, key)
-// 		if !cross_subzone || cmutil.ElementNotInArry(key, c.ExistSubZone) {
-// 			campusNice = append(campusNice, CampusNice{
-// 				Campus: key,
-// 				Count:  len(campusIntances),
-// 			})
-// 		}
-// 	}
-// 	// 按照每个园区的数量从大到小排序
-// 	sort.Sort(CampusWrapper{campusNice, func(p, q *CampusNice) bool {
-// 		return q.Count < p.Count
-// 	}})
-// 	for _, capmus := range campusNice {
-// 		keys = append(keys, capmus.Campus)
-// 	}
-// 	return keys
-// }
-
-// PickerDone TODO
+// PickerDone determine whether resource selection is completed
 func (c *PickerObject) PickerDone() bool {
 	return len(c.SatisfiedHostIds) == c.Count
 }
