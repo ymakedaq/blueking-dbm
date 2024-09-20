@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samber/lo"
+
 	"dbm-services/common/go-pubpkg/errno"
 )
 
@@ -59,8 +61,10 @@ func (m *CloneInstancePrivPara) CloneInstancePriv(jsonPara string, ticket string
 	}
 
 	// 此处单集群instanceType是single
-	if instanceType == machineTypeSingle || instanceType == machineTypeBackend ||
-		instanceType == machineTypeRemote || instanceType == machineTypeSpider {
+	// if instanceType == machineTypeSingle || instanceType == machineTypeBackend ||
+	// 	instanceType == machineTypeRemote || instanceType == machineTypeSpider
+	allowTypes := []string{machineTypeSingle, machineTypeBackend, machineTypeRemote, machineTypeSpider}
+	if lo.Contains(allowTypes, instanceType) {
 		userGrants, err := GetRemotePrivilege(m.Source.Address, "", *m.BkCloudId, instanceType, "", false)
 		if err != nil {
 			return err

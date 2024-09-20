@@ -1,7 +1,18 @@
+/*
+ * TencentBlueKing is pleased to support the open source community by making 蓝鲸智云-DB管理系统(BlueKing-BK-DBM) available.
+ * Copyright (C) 2017-2023 THL A29 Limited, a Tencent company. All rights reserved.
+ * Licensed under the MIT License (the "License"); you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at https://opensource.org/licenses/MIT
+ * Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+ * an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+ * specific language governing permissions and limitations under the License.
+ */
+
 package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -102,7 +113,7 @@ func GetRemotePrivilege(address string, host string, bkCloudId int64, instanceTy
 			}()
 			var Grants []string
 			var err error
-			slog.Info("msg", "userHost", userHost)
+			// slog.Info("msg", "userHost", userHost)
 			err = GetUserGantSql(needShowCreateUser, userHost, address, &Grants, bkCloudId)
 			if err != nil {
 				errorChan <- err
@@ -581,16 +592,11 @@ func CheckGrantInMySqlVersion(userGrants []UserGrant, address string, bkCloudId 
 
 // ImportMysqlPrivileges 执行mysql权限
 func ImportMysqlPrivileges(userGrants []UserGrant, address string, bkCloudId int64) error {
-	// Err 错误信息列表
-	type Err struct {
-		mu   sync.RWMutex
-		errs []string
-	}
-	var errMsg Err
 	wg := sync.WaitGroup{}
 	limit := rate.Every(time.Millisecond * 20) // QPS：50
 	burst := 50                                // 桶容量 50
 	limiter := rate.NewLimiter(limit, burst)
+	errChan := make(chan error, 20)
 	for _, row := range userGrants {
 		errLimiter := limiter.Wait(context.Background())
 		if errLimiter != nil {
@@ -602,27 +608,34 @@ func ImportMysqlPrivileges(userGrants []UserGrant, address string, bkCloudId int
 			defer func() {
 				wg.Done()
 			}()
-			slog.Info("msg", "user@host", row.UserHost)
+			//slog.Info("msg", "user@host", row.UserHost)
 			queryRequest := QueryRequest{[]string{address}, row.Grants, true, 60, bkCloudId}
 			_, err := OneAddressExecuteSql(queryRequest)
 			if err != nil {
-				errMsg.mu.Lock()
-				errMsg.errs = append(errMsg.errs, err.Error())
-				errMsg.mu.Unlock()
+				errChan <- err
 				return
 			}
 		}(row)
 	}
-	wg.Wait()
+
+	go func() {
+		wg.Wait()
+		close(errChan)
+	}()
+
+	var errs []error
+	for err := range errChan {
+		errs = append(errs, err)
+	}
+
 	queryRequest := QueryRequest{[]string{address}, []string{flushPriv}, true, 60, bkCloudId}
 	_, err := OneAddressExecuteSql(queryRequest)
 	if err != nil {
-		errMsg.mu.Lock()
-		errMsg.errs = append(errMsg.errs, err.Error())
-		errMsg.mu.Unlock()
+		slog.Error("execute flush privilges failed", slog.Any("err message:", err))
+		errs = append(errs, err)
 	}
-	if len(errMsg.errs) > 0 {
-		return fmt.Errorf(strings.Join(errMsg.errs, "\n"))
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }

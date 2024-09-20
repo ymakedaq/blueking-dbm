@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"io"
 	"io/ioutil"
 	"log/slog"
 	"strings"
@@ -43,15 +44,15 @@ func (m *PrivService) CloneInstancePriv(c *gin.Context) {
 	var input service.CloneInstancePrivPara
 	ticket := strings.TrimPrefix(c.FullPath(), "/priv/")
 
-	body, err := ioutil.ReadAll(c.Request.Body)
+	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		slog.Error("msg", err)
+		slog.Error("msg", slog.Any("err", err))
 		SendResponse(c, errno.ErrBind, err)
 		return
 	}
 
 	if err = json.Unmarshal(body, &input); err != nil {
-		slog.Error("msg", err)
+		slog.Error("msg", slog.Any("err", err))
 		SendResponse(c, errno.ErrBind, err)
 		return
 	}
