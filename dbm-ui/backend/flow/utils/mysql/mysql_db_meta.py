@@ -845,7 +845,7 @@ class MySQLDBMeta(object):
                 )
                 api.cluster.tendbha.remove_slave(cluster_id=cluster.id, target_slave_ip=old_slave.machine.ip)
 
-    def del_old_slave_meta(self):
+    def del_cluster_old_machine_meta(self):
         """
         删除旧从节点的元数据
         """
@@ -853,17 +853,17 @@ class MySQLDBMeta(object):
             for cluster_id in self.cluster["cluster_ids"]:
                 cluster = Cluster.objects.get(id=cluster_id)
                 master = cluster.main_storage_instances()[0]
-                old_slave = StorageInstance.objects.get(machine__ip=self.cluster["uninstall_ip"], port=master.port)
+                instance = StorageInstance.objects.get(machine__ip=self.cluster["uninstall_ip"], port=master.port)
                 # 删除服务实例
                 CcManage(cluster.bk_biz_id, cluster_type=cluster.cluster_type).delete_service_instance(
-                    bk_instance_ids=[old_slave.bk_instance_id]
+                    bk_instance_ids=[instance.bk_instance_id]
                 )
                 # 删除实例元数据信息
                 api.storage_instance.delete(
                     [
                         {
-                            "ip": old_slave.machine.ip,
-                            "port": old_slave.port,
+                            "ip": instance.machine.ip,
+                            "port": instance.port,
                             "bk_cloud_id": cluster.bk_cloud_id,
                         }
                     ]
