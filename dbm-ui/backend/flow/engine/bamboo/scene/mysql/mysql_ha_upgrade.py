@@ -357,11 +357,11 @@ def tendbha_cluster_upgrade_subflow(
         ro_switch_ro_sub_piplelines = []
         for ro_slave in ro_slaves:
             ro_sub_pipleline = SubBuilder(root_id=root_id, data=parent_global_data)
-            old_slave = ro_slave["old_slave"]
-            new_slave = ro_slave["new_slave"]
-            new_ro_slave_ip = new_slave["ip"]
+            old_ro_slave = ro_slave["old_ro_slave"]
+            new_ro_slave = ro_slave["new_ro_slave"]
+            new_ro_slave_ip = new_ro_slave["ip"]
             bk_host_ids = [new_slave["bk_host_id"]]
-            old_slave_ip = old_slave["ip"]
+            old_slave_ip = old_ro_slave["ip"]
             db_config = get_instance_config(cluster_cls.bk_cloud_id, old_slave_ip, ports=ports)
             install_ro_slave_sub_pipeline = build_install_slave_sub_pipeline(
                 uid,
@@ -386,7 +386,7 @@ def tendbha_cluster_upgrade_subflow(
                 root_id, parent_global_data, cluster_ids, new_ro_slave_ip, local_backup, charset
             )
             ro_sub_pipleline.add_parallel_sub_pipeline(sync_data_sub_pipeline_list)
-            ro_sub_piplelines.append(ro_sub_pipleline.build_sub_process(sub_name=_("安装新从节点并数据同步")))
+            ro_sub_piplelines.append(ro_sub_pipleline.build_sub_process(sub_name=_("安装非stanbySlave节点并数据同步")))
             # 切换换subpipeline
             ro_switch_ro_sub_pipleline = SubBuilder(root_id=root_id, data=parent_global_data)
             switch_sub_pipeline_list = build_switch_sub_pipelines(
@@ -493,7 +493,7 @@ def tendbha_cluster_upgrade_subflow(
         )
     )
     sub_pipeline.add_parallel_sub_pipeline(sub_flow_list=uninstall_flows)
-    return sub_pipeline.build_sub_process(sub_name=_("{}:迁移升级").format(""))
+    return sub_pipeline.build_sub_process(sub_name=_("{}:整体迁移升级").format(cluster_cls.immute_domain))
 
 
 def non_standby_slaves_upgrade_subflow(
