@@ -475,8 +475,8 @@ def tendbha_cluster_upgrade_subflow(
     uninstall_flows = []
     if len(ro_slaves) > 0:
         for ro_slave in ro_slaves:
-            old_slave = ro_slave["old_slave"]
-            old_slave_ip = old_slave["ip"]
+            old_ro_slave = ro_slave["old_ro_slave"]
+            old_slave_ip = old_ro_slave["ip"]
             uninstall_flows.append(
                 build_uninstall_old_machine_sub_pipeline(
                     root_id, parent_global_data, old_slave_ip, cluster_ids, cluster_cls.bk_cloud_id, ports
