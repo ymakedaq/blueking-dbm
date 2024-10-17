@@ -16,7 +16,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"dbm-services/common/go-pubpkg/cmutil"
 	"dbm-services/common/go-pubpkg/logger"
 	"dbm-services/mysql/db-simulation/app/service"
 	"dbm-services/mysql/db-simulation/model"
@@ -121,7 +120,8 @@ func TendbClusterSimulation(r *gin.Context) {
 		BaseParam: &param.BaseParam,
 		Version:   version,
 	}
-	rootPwd := cmutil.RandomString(10)
+	//rootPwd := cmutil.RandomString(10)
+	rootPwd := "1234"
 	if !service.DelPod {
 		logger.Info("the pwd %s", rootPwd)
 	}
