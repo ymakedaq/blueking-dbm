@@ -83,7 +83,7 @@ func TendbSimulation(r *gin.Context) {
 			replaceUnderSource(param.TaskId)),
 		Lables: map[string]string{"task_id": replaceUnderSource(param.TaskId),
 			"request_id": requestID},
-		RootPwd: param.TaskId,
+		RootPwd: "1234",
 		Args:    param.BuildStartArgs(),
 		Charset: param.MySQLCharSet,
 	}
