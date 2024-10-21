@@ -124,7 +124,7 @@ func (k *DbPodSets) getClusterPodContanierSpec() []v1.Container {
 		"--defaults-file=/etc/my.cnf",
 		"--log_bin_trust_function_creators",
 		"--max_allowed_packet=1073741824",
-		"--sql-mode=''",
+		"--sql-mode=",
 		fmt.Sprintf("--character-set-server=%s",
 			k.BaseInfo.Charset),
 		"--user=mysql"}
