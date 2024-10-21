@@ -120,6 +120,14 @@ func (k *DbPodSets) getCreateClusterSqls() []string {
 }
 
 func (k *DbPodSets) getClusterPodContanierSpec() []v1.Container {
+	comStarArgs := []string{"mysqld",
+		"--defaults-file=/etc/my.cnf",
+		"--log_bin_trust_function_creators",
+		"--max_allowed_packet=1073741824",
+		"--sql-mode=''",
+		fmt.Sprintf("--character-set-server=%s",
+			k.BaseInfo.Charset),
+		"--user=mysql"}
 	return []v1.Container{
 		{
 			Name: "backend",
@@ -130,14 +138,7 @@ func (k *DbPodSets) getClusterPodContanierSpec() []v1.Container {
 			Resources:       k.getResourceLimit(),
 			ImagePullPolicy: v1.PullIfNotPresent,
 			Image:           k.DbImage,
-			Args: []string{"mysqld",
-				"--defaults-file=/etc/my.cnf",
-				"--log_bin_trust_function_creators",
-				"--port=20000",
-				"--max_allowed_packet=1073741824",
-				fmt.Sprintf("--character-set-server=%s",
-					k.BaseInfo.Charset),
-				"--user=mysql"},
+			Args:            append(comStarArgs, "--port=20000"),
 			ReadinessProbe: &v1.Probe{
 				ProbeHandler: v1.ProbeHandler{
 					Exec: &v1.ExecAction{
@@ -156,14 +157,7 @@ func (k *DbPodSets) getClusterPodContanierSpec() []v1.Container {
 			Resources:       k.getResourceLimit(),
 			ImagePullPolicy: v1.PullIfNotPresent,
 			Image:           k.SpiderImage,
-			Args: []string{"mysqld",
-				"--defaults-file=/etc/my.cnf",
-				"--log_bin_trust_function_creators",
-				"--port=25000",
-				"--max_allowed_packet=1073741824",
-				fmt.Sprintf("--character-set-server=%s",
-					k.BaseInfo.Charset),
-				"--user=mysql"},
+			Args:            append(comStarArgs, "--port=25000"),
 			ReadinessProbe: &v1.Probe{
 				ProbeHandler: v1.ProbeHandler{
 					Exec: &v1.ExecAction{
@@ -183,11 +177,7 @@ func (k *DbPodSets) getClusterPodContanierSpec() []v1.Container {
 			Resources:       k.gettdbctlResourceLimit(),
 			ImagePullPolicy: v1.PullIfNotPresent,
 			Image:           k.TdbCtlImage,
-			Args: []string{"mysqld", "--defaults-file=/etc/my.cnf", "--port=26000", "--tc-admin=1",
-				"--dbm-allow-standalone-primary",
-				fmt.Sprintf("--character-set-server=%s",
-					k.BaseInfo.Charset),
-				"--user=mysql"},
+			Args:            append(comStarArgs, "--port=26000", "--tc-admin=1", "--dbm-allow-standalone-primary"),
 			ReadinessProbe: &v1.Probe{
 				ProbeHandler: v1.ProbeHandler{
 					Exec: &v1.ExecAction{
