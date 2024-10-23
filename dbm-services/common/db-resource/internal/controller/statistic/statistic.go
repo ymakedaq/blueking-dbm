@@ -122,11 +122,16 @@ func (s *Handler) ResourceDistribution(c *gin.Context) {
 	}
 
 	dbmClient := dbmapi.NewDbmClient()
+	logger.Info("query dbm spec param: %v", param.SpecParam.getQueryParam())
 	specList, err := dbmClient.GetDbmSpec(param.SpecParam.getQueryParam())
 	if err != nil {
 		logger.Error("get dbm spec failed: %v", err)
 		s.SendResponse(c, err, "Failed to get DBM specifications", "")
 		return
+	}
+	logger.Info("get dbm spec count: %d", len(specList))
+	for _, spec := range specList {
+		logger.Info("name:%s,machine type:%s,spec id:%d,info %v", spec.SpecName, spec.SpecMachineType, spec.SpecId, spec)
 	}
 	allLogicCityInfos, err := dbmapi.GetAllLogicCityInfo()
 	if err != nil {
