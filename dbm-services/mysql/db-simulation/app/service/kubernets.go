@@ -244,12 +244,13 @@ func (k *DbPodSets) createpod(pod *v1.Pod, probePort int) (err error) {
 		logger.Error("create pod failed %s", err.Error())
 		return err
 	}
-	uid := string(podc.GetUID())
+	// 记录创建pod
 	model.DB.Create(&model.TbContainerRecord{
 		Container:     k.BaseInfo.PodName,
-		Uid:           uid,
+		Uid:           string(podc.GetUID()),
 		CreatePodTime: time.Now(),
 		CreateTime:    time.Now()})
+
 	podIp := podc.Status.PodIP
 	// 连续多次探测pod的状态
 	fn := func() (err error) {
@@ -258,9 +259,13 @@ func (k *DbPodSets) createpod(pod *v1.Pod, probePort int) (err error) {
 		if err != nil {
 			return err
 		}
+
 		if len(podI.Status.ContainerStatuses) == 0 {
-			return fmt.Errorf("get pod status is empty,wait some seconds")
+			return fmt.Errorf("get pod status is empty,wait some seconds,current pod %s,phase %s,reason:%s,messages:%s",
+				podI.Name, podI.Status.Phase, podI.Status.Reason,
+				podI.Status.Message)
 		}
+
 		for _, cStatus := range podI.Status.ContainerStatuses {
 			logger.Info("%s: %v", cStatus.Name, cStatus.Ready)
 			if !cStatus.Ready {
@@ -273,13 +278,13 @@ func (k *DbPodSets) createpod(pod *v1.Pod, probePort int) (err error) {
 			}
 		}
 		podIp = podI.Status.PodIP
-		logger.Info("the pod is ready,ip is %s", podIp)
 		return nil
 	}
+
 	if err = cmutil.Retry(cmutil.RetryConfig{Times: 120, DelayTime: 2 * time.Second}, fn); err != nil {
 		return err
 	}
-	logger.Info("the podIp is %s", podIp)
+
 	fnc := func() error {
 		k.DbWork, err = cmutil.NewDbWorker(fmt.Sprintf("%s:%s@tcp(%s:%d)/?timeout=5s&multiStatements=true",
 			DefaultUser,
@@ -291,9 +296,11 @@ func (k *DbPodSets) createpod(pod *v1.Pod, probePort int) (err error) {
 		}
 		return nil
 	}
+
 	if err = cmutil.Retry(cmutil.RetryConfig{Times: 60, DelayTime: 1 * time.Second}, fnc); err == nil {
 		model.UpdateTbContainerRecord(k.BaseInfo.PodName)
 	}
+
 	_, errx := k.DbWork.Db.Exec("create user ADMIN@localhost;")
 	if errx != nil {
 		logger.Error("create user ADMIN@localhost failed %s", errx.Error())
@@ -456,7 +463,7 @@ func getdownloadUrl(bkpath, file string) string {
 	return ll
 }
 
-// executeInPod TODO
+// executeInPod execute cmd in pod
 func (k *DbPodSets) executeInPod(cmd, container string, extMap map[string]string, noLogger bool) (stdout,
 	stderr bytes.Buffer,
 	err error) {
