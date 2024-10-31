@@ -12,6 +12,7 @@ package handler
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,11 @@ import (
 	"dbm-services/mysql/db-simulation/model"
 )
 
+// SimulationHandler TODO
+type SimulationHandler struct {
+	BaseHandler
+}
+
 // QueryFileResultParam 获取模拟执行文件的结果
 type QueryFileResultParam struct {
 	RootID    string `json:"root_id"  binding:"required" `
@@ -29,11 +35,9 @@ type QueryFileResultParam struct {
 }
 
 // QuerySimulationFileResult 查询模拟执行每个文件的执行结果
-func QuerySimulationFileResult(r *gin.Context) {
+func (s *SimulationHandler) QuerySimulationFileResult(r *gin.Context) {
 	var param QueryFileResultParam
-	if err := r.ShouldBindJSON(&param); err != nil {
-		logger.Error("ShouldBind failed %s", err)
-		SendResponse(r, err, "failed to deserialize parameters", "")
+	if s.Prepare(r, &param) != nil {
 		return
 	}
 	task_id := fmt.Sprintf("%s_%s", param.RootID, param.VersionID)
@@ -41,39 +45,32 @@ func QuerySimulationFileResult(r *gin.Context) {
 	err := model.DB.Where("task_id = ? ", task_id).Find(&data).Error
 	if err != nil {
 		logger.Error("query file task result failed %v", err)
-		SendResponse(r, err, err.Error(), "")
+		s.SendResponse(r, err, err.Error())
 		return
 	}
-	SendResponse(r, nil, data, "")
+	s.SendResponse(r, nil, data)
 }
 
 // TendbSimulation Tendb simulation handler
-func TendbSimulation(r *gin.Context) {
+func (s *SimulationHandler) TendbSimulation(r *gin.Context) {
 	var param service.BaseParam
-	requestID := r.GetString("request_id")
-	if err := r.ShouldBindJSON(&param); err != nil {
-		logger.Error("ShouldBind failed %s", err)
-		SendResponse(r, err, "failed to deserialize parameters", requestID)
-		return
-	}
-	if requestID == "" {
-		SendResponse(r, fmt.Errorf("create request id failed"), nil, requestID)
+	if s.Prepare(r, &param) != nil {
 		return
 	}
 	version := param.MySQLVersion
 	img, err := getImgFromMySQLVersion(version)
 	if err != nil {
 		logger.Error("GetImgFromMySQLVersion %s failed:%s", version, err.Error())
-		SendResponse(r, err, nil, requestID)
+		s.SendResponse(r, err, nil)
 		return
 	}
-	if err := model.CreateTask(param.TaskId, requestID, version, param.Uid); err != nil {
+	if err := model.CreateTask(param.TaskId, s.RequestId, version, param.Uid); err != nil {
 		logger.Error("create task db record error %s", err.Error())
-		SendResponse(r, err, nil, requestID)
+		s.SendResponse(r, err, nil)
 		return
 	}
 	tsk := service.SimulationTask{
-		RequestId: requestID,
+		RequestId: s.RequestId,
 		DbPodSets: service.NewDbPodSets(),
 		BaseParam: &param,
 		Version:   version,
@@ -83,40 +80,37 @@ func TendbSimulation(r *gin.Context) {
 		PodName: fmt.Sprintf("tendb-%s-%s", strings.ToLower(version),
 			replaceUnderSource(param.TaskId)),
 		Lables: map[string]string{"task_id": replaceUnderSource(param.TaskId),
-			"request_id": requestID},
+			"request_id": s.RequestId},
 		RootPwd: param.TaskId,
 		Args:    param.BuildStartArgs(),
 		Charset: param.MySQLCharSet,
 	}
 	service.TaskChan <- tsk
 
-	SendResponse(r, nil, "request successful", requestID)
+	s.SendResponse(r, nil, "request successful")
 }
 
 // TendbClusterSimulation TendbCluster simulation handler
-func TendbClusterSimulation(r *gin.Context) {
+func (s *SimulationHandler) TendbClusterSimulation(r *gin.Context) {
 	var param service.SpiderSimulationExecParam
-	RequestID := r.GetString("request_id")
-	if err := r.ShouldBindJSON(&param); err != nil {
-		logger.Error("ShouldBind failed %s", err)
-		SendResponse(r, err, "failed to deserialize parameters", RequestID)
+	if s.Prepare(r, &param) != nil {
 		return
 	}
 	version := param.MySQLVersion
 	img, err := getImgFromMySQLVersion(version)
 	if err != nil {
 		logger.Error("GetImgFromMySQLVersion %s failed:%s", version, err.Error())
-		SendResponse(r, err, nil, RequestID)
+		s.SendResponse(r, err, nil)
 		return
 	}
 
-	if err := model.CreateTask(param.TaskId, RequestID, version, param.Uid); err != nil {
+	if err := model.CreateTask(param.TaskId, s.RequestId, version, param.Uid); err != nil {
 		logger.Error("create task db record error %s", err.Error())
-		SendResponse(r, err, nil, RequestID)
+		s.SendResponse(r, err, nil)
 		return
 	}
 	tsk := service.SimulationTask{
-		RequestId: RequestID,
+		RequestId: s.RequestId,
 		DbPodSets: service.NewDbPodSets(),
 		BaseParam: &param.BaseParam,
 		Version:   version,
@@ -131,10 +125,62 @@ func TendbClusterSimulation(r *gin.Context) {
 		PodName: fmt.Sprintf("spider-%s-%s", strings.ToLower(version),
 			replaceUnderSource(param.TaskId)),
 		Lables: map[string]string{"task_id": replaceUnderSource(param.TaskId),
-			"request_id": RequestID},
+			"request_id": s.RequestId},
 		RootPwd: rootPwd,
 		Charset: param.MySQLCharSet,
 	}
 	service.SpiderTaskChan <- tsk
-	SendResponse(r, nil, "request successful", RequestID)
+	s.SendResponse(r, nil, "request successful")
+}
+
+// T 请求查询模拟执行整体任务的执行状态参数
+type T struct {
+	TaskID string `json:"task_id"`
+}
+
+// QueryTask 查询模拟执行整体任务的执行状态
+func (s *SimulationHandler) QueryTask(r *gin.Context) {
+	var param T
+	if s.Prepare(r, &param) != nil {
+		return
+	}
+	logger.Info("get task_id is %s", param.TaskID)
+	var tasks []model.TbSimulationTask
+	if err := model.DB.Where(&model.TbSimulationTask{TaskId: param.TaskID}).Find(&tasks).Error; err != nil {
+		logger.Error("query task failed %s", err.Error())
+		s.SendResponse(r, err, map[string]interface{}{"stderr": err.Error()})
+		return
+	}
+	allSuccessful := false
+	for _, task := range tasks {
+		if task.Phase != model.PhaseDone {
+			r.JSON(http.StatusOK, Response{
+				Code:    2,
+				Message: fmt.Sprintf("task current phase is %s", task.Phase),
+				Data:    "",
+			})
+			return
+		}
+		switch task.Status {
+		case model.TaskFailed:
+			allSuccessful = false
+			s.SendResponse(r, fmt.Errorf("%s", task.SysErrMsg), map[string]interface{}{
+				"simulation_version": task.MySQLVersion,
+				"stdout":             task.Stdout,
+				"stderr":             task.Stderr,
+				"errmsg":             fmt.Sprintf("the program has been run with abnormal status:%s", task.Status)})
+
+		case model.TaskSuccess:
+			allSuccessful = true
+		default:
+			allSuccessful = false
+			s.SendResponse(r, fmt.Errorf("unknown transition state"), map[string]interface{}{
+				"stdout": task.Stdout,
+				"stderr": task.Stderr,
+				"errmsg": fmt.Sprintf("the program has been run with abnormal status:%s", task.Status)})
+		}
+	}
+	if allSuccessful {
+		s.SendResponse(r, nil, map[string]interface{}{"stdout": "all ok", "stderr": "all ok"})
+	}
 }

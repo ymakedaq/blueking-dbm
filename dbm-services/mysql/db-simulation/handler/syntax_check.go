@@ -46,7 +46,9 @@ func init() {
 }
 
 // SyntaxHandler 语法检查 handler
-type SyntaxHandler struct{}
+type SyntaxHandler struct {
+	BaseHandler
+}
 
 // CheckSQLStringParam sql string 语法检查参数
 type CheckSQLStringParam struct {
@@ -56,31 +58,22 @@ type CheckSQLStringParam struct {
 }
 
 // SyntaxCheckSQL 语法检查入参SQL string
-func SyntaxCheckSQL(r *gin.Context) {
-	requestID := r.GetString("request_id")
+func (c *SyntaxHandler) SyntaxCheckSQL(r *gin.Context) {
 	var param CheckSQLStringParam
 	var data map[string]*syntax.CheckInfo
 	var versions []string
-	// 将request中的数据按照json格式直接解析到结构体中
-	if err := r.ShouldBindJSON(&param); err != nil {
-		logger.Error("ShouldBind failed %s", err)
-		SendResponse(r, err, nil, requestID)
+	if c.Prepare(r, &param) != nil {
 		return
 	}
-
 	logger.Info("versions: %v", param.Versions)
-	if len(param.Versions) == 0 {
-		versions = []string{""}
-	} else {
-		versions = rebuildVersion(param.Versions)
-	}
+	versions = rebuildVersion(param.Versions)
 
 	sqlContext := strings.Join(param.Sqls, "\n")
 	fileName := "ce_" + cmutil.RandStr(10) + ".sql"
 	f := path.Join(workdir, fileName)
 	err := os.WriteFile(f, []byte(sqlContext), 0600)
 	if err != nil {
-		SendResponse(r, err, err.Error(), requestID)
+		c.SendResponse(r, err, err.Error())
 		return
 	}
 
@@ -88,6 +81,7 @@ func SyntaxCheckSQL(r *gin.Context) {
 		TmysqlParse: syntax.TmysqlParse{
 			TmysqlParseBinPath: tmysqlParserBin,
 			BaseWorkdir:        workdir,
+			DbType:             getTmysqlParseDbtype(param.ClusterType),
 		},
 		IsLocalFile: true,
 		Param: syntax.CheckSQLFileParam{
@@ -97,21 +91,23 @@ func SyntaxCheckSQL(r *gin.Context) {
 	}
 
 	logger.Info("cluster type :%s,versions:%v", param.ClusterType, versions)
-
-	switch strings.ToLower(param.ClusterType) {
-	case app.Spider, app.TendbCluster:
-		data, err = check.Do(app.Spider, []string{""})
-	case app.MySQL:
-		data, err = check.Do(app.MySQL, versions)
-	default:
-		data, err = check.Do(app.MySQL, versions)
-	}
-
+	data, err = check.Do(versions)
 	if err != nil {
-		SendResponse(r, err, data, requestID)
+		c.SendResponse(r, err, data)
 		return
 	}
-	SendResponse(r, nil, data, requestID)
+	c.SendResponse(r, nil, data)
+}
+
+func getTmysqlParseDbtype(clusterType string) string {
+	switch strings.ToLower(clusterType) {
+	case app.Spider, app.TendbCluster:
+		return app.Spider
+	case app.MySQL:
+		return app.MySQL
+	default:
+		return app.MySQL
+	}
 }
 
 // CheckFileParam 语法检查请求参数
@@ -123,29 +119,21 @@ type CheckFileParam struct {
 }
 
 // SyntaxCheckFile 运行语法检查
-func SyntaxCheckFile(r *gin.Context) {
-	requestID := r.GetString("request_id")
+func (c *SyntaxHandler) SyntaxCheckFile(r *gin.Context) {
 	var param CheckFileParam
 	var data map[string]*syntax.CheckInfo
 	var err error
 	var versions []string
 	// 将request中的数据按照json格式直接解析到结构体中
-	if err = r.ShouldBindJSON(&param); err != nil {
-		logger.Error("ShouldBind failed %s", err)
-		SendResponse(r, err, nil, requestID)
+	if c.Prepare(r, &param) != nil {
 		return
 	}
-
-	if len(param.Versions) == 0 {
-		versions = []string{""}
-	} else {
-		versions = rebuildVersion(param.Versions)
-	}
-
+	versions = rebuildVersion(param.Versions)
 	check := &syntax.TmysqlParseFile{
 		TmysqlParse: syntax.TmysqlParse{
 			TmysqlParseBinPath: tmysqlParserBin,
 			BaseWorkdir:        workdir,
+			DbType:             getTmysqlParseDbtype(param.ClusterType),
 		},
 		Param: syntax.CheckSQLFileParam{
 			BkRepoBasePath: param.Path,
@@ -154,30 +142,19 @@ func SyntaxCheckFile(r *gin.Context) {
 	}
 
 	logger.Info("cluster type :%s", param.ClusterType)
-	switch strings.ToLower(param.ClusterType) {
-	case app.Spider, app.TendbCluster:
-		data, err = check.Do(app.Spider, []string{""})
-	case app.MySQL:
-		data, err = check.Do(app.MySQL, versions)
-	default:
-		data, err = check.Do(app.MySQL, versions)
-	}
-
+	data, err = check.Do(versions)
 	if err != nil {
-		SendResponse(r, err, data, requestID)
+		c.SendResponse(r, err, data)
 		return
 	}
-	SendResponse(r, nil, data, requestID)
+	c.SendResponse(r, nil, data)
 }
 
 // CreateAndUploadDDLTblListFile 分析变更SQL DDL操作的表，并将文件上传到制品库
-func CreateAndUploadDDLTblListFile(r *gin.Context) {
-	requestID := r.GetString("request_id")
+func (c *SyntaxHandler) CreateAndUploadDDLTblListFile(r *gin.Context) {
 	var param CheckFileParam
 	// 将request中的数据按照json格式直接解析到结构体中
-	if err := r.ShouldBindJSON(&param); err != nil {
-		logger.Error("ShouldBind failed %s", err)
-		SendResponse(r, err, nil, requestID)
+	if c.Prepare(r, &param) != nil {
 		return
 	}
 	check := &syntax.TmysqlParseFile{
@@ -191,16 +168,16 @@ func CreateAndUploadDDLTblListFile(r *gin.Context) {
 		},
 	}
 	if err := check.CreateAndUploadDDLTblFile(); err != nil {
-		SendResponse(r, err, nil, requestID)
+		c.SendResponse(r, err, nil)
 		return
 	}
-	SendResponse(r, nil, "ok", requestID)
+	c.SendResponse(r, nil, "ok")
 }
 
 // rebuildVersion  tmysql 需要指定特殊的version
 func rebuildVersion(versions []string) (rebuildVers []string) {
 	if len(versions) == 0 {
-		return
+		return []string{""}
 	}
 	rebuildVers = make([]string, 0)
 	for _, bVer := range versions {

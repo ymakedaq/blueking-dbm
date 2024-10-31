@@ -28,28 +28,31 @@ func RegisterRouter(engine *gin.Engine) {
 	})
 	engine.POST("/app/debug", TurnOnDebug)
 
+	simulationHandler := handler.SimulationHandler{}
 	// query simulation task status info
 	t := engine.Group("/simulation")
-	t.POST("/task/file", handler.QuerySimulationFileResult)
-	t.POST("/task", handler.QueryTask)
+	t.POST("/task/file", simulationHandler.QuerySimulationFileResult)
+	t.POST("/task", simulationHandler.QueryTask)
 	// mysql
 	g := engine.Group("/mysql")
-	g.POST("/simulation", handler.TendbSimulation)
-	g.POST("/task", handler.QueryTask)
+	g.POST("/simulation", simulationHandler.TendbSimulation)
+	g.POST("/task", simulationHandler.QueryTask)
 	// syntax
+	syntaxHandler := handler.SyntaxHandler{}
 	s := engine.Group("/syntax")
-	s.POST("/check/file", handler.SyntaxCheckFile)
-	s.POST("/check/sql", handler.SyntaxCheckSQL)
-	s.POST("/upload/ddl/tbls", handler.CreateAndUploadDDLTblListFile)
+	s.POST("/check/file", syntaxHandler.SyntaxCheckFile)
+	s.POST("/check/sql", syntaxHandler.SyntaxCheckSQL)
+	s.POST("/upload/ddl/tbls", syntaxHandler.CreateAndUploadDDLTblListFile)
 	// rule
+	manageRuleHandler := handler.ManageRuleHandler{}
 	r := engine.Group("/rule")
-	r.POST("/manage", handler.ManageRule)
-	r.GET("/getall", handler.GetAllRule)
-	r.POST("/update", handler.UpdateRule)
+	r.POST("/manage", manageRuleHandler.ManageRule)
+	r.GET("/getall", manageRuleHandler.GetAllRule)
+	r.POST("/update", manageRuleHandler.UpdateRule)
 	// spider
 	sp := engine.Group("/spider")
-	sp.POST("/simulation", handler.TendbClusterSimulation)
-	sp.POST("/create", handler.CreateTmpSpiderPodCluster)
+	sp.POST("/simulation", simulationHandler.TendbClusterSimulation)
+	sp.POST("/create", simulationHandler.CreateTmpSpiderPodCluster)
 }
 
 // TurnOnDebug turn on debug,not del simulation pod

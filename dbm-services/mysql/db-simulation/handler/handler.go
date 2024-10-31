@@ -20,11 +20,54 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
 
+	"dbm-services/common/go-pubpkg/cmutil"
 	"dbm-services/common/go-pubpkg/logger"
 	"dbm-services/mysql/db-simulation/app/config"
 	"dbm-services/mysql/db-simulation/app/service"
 	"dbm-services/mysql/db-simulation/model"
 )
+
+// BaseHandler base handler
+type BaseHandler struct {
+	RequestId string
+}
+
+// Prepare prepare request
+func (b *BaseHandler) Prepare(r *gin.Context, schema interface{}) error {
+	requestId := r.GetString("request_id")
+	if cmutil.IsEmpty(requestId) {
+		err := fmt.Errorf("get request id error ~")
+		b.SendResponse(r, err, nil)
+		return err
+	}
+	b.RequestId = requestId
+	if err := r.ShouldBind(&schema); err != nil {
+		logger.Error("ShouldBind Failed %s", err.Error())
+		b.SendResponse(r, err, nil)
+		return err
+	}
+	logger.Info("param is %v", schema)
+	return nil
+}
+
+// SendResponse send response to client
+func (b *BaseHandler) SendResponse(r *gin.Context, err error, data interface{}) {
+	if err != nil {
+		r.JSON(http.StatusOK, Response{
+			Code:      1,
+			Message:   err.Error(),
+			Data:      data,
+			RequestID: b.RequestId,
+		})
+		return
+	}
+	r.JSON(http.StatusOK, Response{
+		Code:      0,
+		Message:   "successfully",
+		Data:      data,
+		RequestID: b.RequestId,
+	})
+}
 
 // Response response data define
 type Response struct {
@@ -42,11 +85,9 @@ type CreateClusterParam struct {
 }
 
 // CreateTmpSpiderPodCluster 创建临时的spider的集群,多用于测试，debug
-func CreateTmpSpiderPodCluster(r *gin.Context) {
+func (b *BaseHandler) CreateTmpSpiderPodCluster(r *gin.Context) {
 	var param CreateClusterParam
-	if err := r.ShouldBindJSON(&param); err != nil {
-		logger.Error("ShouldBind failed %s", err)
-		SendResponse(r, err, "failed to deserialize parameters", "")
+	if err := b.Prepare(r, param); err != nil {
 		return
 	}
 	ps := service.NewDbPodSets()
@@ -61,86 +102,11 @@ func CreateTmpSpiderPodCluster(r *gin.Context) {
 		logger.Error(err.Error())
 		return
 	}
-	SendResponse(r, nil, "ok", "")
+	b.SendResponse(r, nil, "ok")
 }
 
 func replaceUnderSource(str string) string {
 	return strings.ReplaceAll(str, "_", "-")
-}
-
-// T 请求查询模拟执行整体任务的执行状态参数
-type T struct {
-	TaskID string `json:"task_id"`
-}
-
-// QueryTask 查询模拟执行整体任务的执行状态
-func QueryTask(c *gin.Context) {
-	var param T
-	if err := c.ShouldBindJSON(&param); err != nil {
-		logger.Error("ShouldBind failed %s", err)
-		SendResponse(c, err, map[string]interface{}{"stderr": "failed to deserialize parameters"}, "")
-		return
-	}
-	logger.Info("get task_id is %s", param.TaskID)
-	var tasks []model.TbSimulationTask
-	if err := model.DB.Where(&model.TbSimulationTask{TaskId: param.TaskID}).Find(&tasks).Error; err != nil {
-		logger.Error("query task failed %s", err.Error())
-		SendResponse(c, err, map[string]interface{}{"stderr": err.Error()}, "")
-		return
-	}
-	allSuccessful := false
-	for _, task := range tasks {
-		if task.Phase != model.PhaseDone {
-			c.JSON(http.StatusOK, Response{
-				Code:    2,
-				Message: fmt.Sprintf("task current phase is %s", task.Phase),
-				Data:    "",
-			})
-			return
-		}
-		switch task.Status {
-		case model.TaskFailed:
-			allSuccessful = false
-			SendResponse(c, fmt.Errorf("%s", task.SysErrMsg), map[string]interface{}{
-				"simulation_version": task.MySQLVersion,
-				"stdout":             task.Stdout,
-				"stderr":             task.Stderr,
-				"errmsg":             fmt.Sprintf("the program has been run with abnormal status:%s", task.Status)},
-				"")
-
-		case model.TaskSuccess:
-			allSuccessful = true
-		default:
-			allSuccessful = false
-			SendResponse(c, fmt.Errorf("unknown transition state"), map[string]interface{}{
-				"stdout": task.Stdout,
-				"stderr": task.Stderr,
-				"errmsg": fmt.Sprintf("the program has been run with abnormal status:%s", task.Status)},
-				"")
-		}
-	}
-	if allSuccessful {
-		SendResponse(c, nil, map[string]interface{}{"stdout": "all ok", "stderr": "all ok"}, "")
-	}
-}
-
-// SendResponse return response data to http client
-func SendResponse(r *gin.Context, err error, data interface{}, requestid string) {
-	if err != nil {
-		r.JSON(http.StatusOK, Response{
-			Code:      1,
-			Message:   err.Error(),
-			Data:      data,
-			RequestID: requestid,
-		})
-		return
-	}
-	r.JSON(http.StatusOK, Response{
-		Code:      0,
-		Message:   "successfully",
-		Data:      data,
-		RequestID: requestid,
-	})
 }
 
 // getImgFromMySQLVersion 根据版本获取模拟执行运行的镜像配置

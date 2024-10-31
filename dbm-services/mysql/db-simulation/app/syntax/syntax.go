@@ -67,6 +67,7 @@ type TmysqlParse struct {
 	bkRepoClient       *bkrepo.BkRepoClient
 	TmysqlParseBinPath string
 	BaseWorkdir        string
+	DbType             string
 	mu                 sync.Mutex
 }
 
@@ -111,7 +112,7 @@ type RiskInfo struct {
 const DdlMapFileSubffix = ".tbl.map"
 
 // Do  运行语法检查 For SQL 文件
-func (tf *TmysqlParseFile) Do(dbtype string, versions []string) (result map[string]*CheckInfo, err error) {
+func (tf *TmysqlParseFile) Do(versions []string) (result map[string]*CheckInfo, err error) {
 	logger.Info("doing....")
 	tf.result = make(map[string]*CheckInfo)
 	tf.tmpWorkdir = tf.BaseWorkdir
@@ -132,7 +133,7 @@ func (tf *TmysqlParseFile) Do(dbtype string, versions []string) (result map[stri
 
 	var errs []error
 	for _, version := range versions {
-		if err = tf.doSingleVersion(dbtype, version); err != nil {
+		if err = tf.doSingleVersion(version); err != nil {
 			logger.Error("when do [%s],syntax check,failed:%s", version, err.Error())
 			errs = append(errs, err)
 		}
@@ -141,7 +142,7 @@ func (tf *TmysqlParseFile) Do(dbtype string, versions []string) (result map[stri
 	return tf.result, errors.Join(errs...)
 }
 
-func (tf *TmysqlParseFile) doSingleVersion(dbtype string, mysqlVersion string) (err error) {
+func (tf *TmysqlParseFile) doSingleVersion(mysqlVersion string) (err error) {
 	errChan := make(chan error, 1)
 	alreadExecutedSqlfileChan := make(chan string, len(tf.Param.FileNames))
 	signalChan := make(chan struct{})
@@ -157,7 +158,7 @@ func (tf *TmysqlParseFile) doSingleVersion(dbtype string, mysqlVersion string) (
 	// 对tmysqlparse的处理结果进行分析，为json文件，后面用到了rule
 	go func() {
 		logger.Info("start to analyze the parsing result")
-		if err = tf.AnalyzeParseResult(alreadExecutedSqlfileChan, mysqlVersion, dbtype); err != nil {
+		if err = tf.AnalyzeParseResult(alreadExecutedSqlfileChan, mysqlVersion); err != nil {
 			logger.Error("failed to analyze the parsing result:%s", err.Error())
 			errChan <- err
 		}
@@ -376,8 +377,7 @@ func (t *TmysqlParse) getAbsoutputfilePath(sqlFile, version string) string {
 }
 
 // AnalyzeParseResult 分析tmysqlparse 解析的结果
-func (t *TmysqlParse) AnalyzeParseResult(alreadExecutedSqlfileCh chan string, mysqlVersion string,
-	dbtype string) (err error) {
+func (t *TmysqlParse) AnalyzeParseResult(alreadExecutedSqlfileCh chan string, mysqlVersion string) (err error) {
 	var errs []error
 	c := make(chan struct{}, 10)
 	errChan := make(chan error, 5)
@@ -388,7 +388,7 @@ func (t *TmysqlParse) AnalyzeParseResult(alreadExecutedSqlfileCh chan string, my
 		c <- struct{}{}
 		go func(fileName string) {
 			defer wg.Done()
-			err = t.AnalyzeOne(fileName, mysqlVersion, dbtype)
+			err = t.AnalyzeOne(fileName, mysqlVersion)
 			if err != nil {
 				errChan <- err
 			}
@@ -512,7 +512,7 @@ func (t *TmysqlParse) getSyntaxErrorResult(res ParseLineQueryBase, mysqlVersion 
 }
 
 // AnalyzeOne 分析单个文件
-func (t *TmysqlParse) AnalyzeOne(inputfileName, mysqlVersion, dbtype string) (err error) {
+func (t *TmysqlParse) AnalyzeOne(inputfileName, mysqlVersion string) (err error) {
 	var idx int
 	var syntaxFailInfos []FailedInfo
 	var buf []byte
@@ -570,7 +570,7 @@ func (t *TmysqlParse) AnalyzeOne(inputfileName, mysqlVersion, dbtype string) (er
 			continue
 		}
 		// tmysqlparse检查结果全部正确，开始判断语句是否符合定义的规则（即虽然语法正确，但语句可能是高危语句或禁用的命令）
-		switch dbtype {
+		switch t.DbType {
 		case app.MySQL:
 			checkResult.parseResult(R.CommandRule.HighRiskCommandRule, res, mysqlVersion)
 			checkResult.parseResult(R.CommandRule.BanCommandRule, res, mysqlVersion)
