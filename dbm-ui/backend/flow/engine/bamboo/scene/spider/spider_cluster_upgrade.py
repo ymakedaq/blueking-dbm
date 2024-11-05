@@ -55,9 +55,70 @@ from backend.ticket.builders.common.constants import MySQLBackupSource
 logger = logging.getLogger("flow")
 
 
-class TendbClusterMigrateRemoteFlow(object):
+class TendbClusterMigrateUpgradeRemoteFlow(object):
     """
-    tendb cluster 后端remote节点主从成对迁移
+    tendb cluster 后端remote整体升级
+    example:
+    {
+        "uid": "2022051612120001",
+        "created_by": "xxxx",
+        "bk_biz_id": "152",
+        "ticket_type": "TENDBCLUSTER_UPGRADE",
+        "backup_source": "local",
+        "info": [
+            {
+                "cluser_id": 10099,
+                "new_db_module_id": 666,
+                "pkg_id": 123,
+                "migrate_pairs": [
+                    {
+                        "old_master": {
+                            "ip": "1.1.1.1",
+                            "bk_host_id": 123,
+                            "bk_cloud_id": 0
+                        },
+                        "old_slave": {
+                            "ip": "1.1.1.2",
+                            "bk_host_id": 124,
+                            "bk_cloud_id": 0
+                        },
+                        "new_master": {
+                            "ip": "1.1.1.3",
+                            "bk_host_id": 125,
+                            "bk_cloud_id": 0
+                        },
+                        "new_slave": {
+                            "ip": "1.1.1.4",
+                            "bk_host_id": 126,
+                            "bk_cloud_id": 0
+                        }
+                    },
+                    {
+                        "old_master": {
+                            "ip": "1.1.2.1",
+                            "bk_host_id": 127,
+                            "bk_cloud_id": 0
+                        },
+                        "old_slave": {
+                            "ip": "1.1.2.2",
+                            "bk_host_id": 128,
+                            "bk_cloud_id": 0
+                        },
+                        "new_master": {
+                            "ip": "1.1.2.3",
+                            "bk_host_id": 129,
+                            "bk_cloud_id": 0
+                        },
+                        "new_slave": {
+                            "ip": "1.1.2.4",
+                            "bk_host_id": 130,
+                            "bk_cloud_id": 0
+                        }
+                    }
+                ]
+            }
+        ]
+    }
     """
 
     def __init__(self, root_id: str, ticket_data: Optional[Dict]):
