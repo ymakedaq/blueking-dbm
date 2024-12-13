@@ -63,13 +63,14 @@ type VersionInfo struct {
 
 // 运行时上下文
 type upgradeRtx struct {
-	dbConns    map[Port]*native.DbWorker
-	verMap     map[Port]VersionInfo
-	sysUsers   []string
-	newVersion VersionInfo
-	socketMaps map[Port]string
-	adminUser  string
-	adminPwd   string
+	dbConns           map[Port]*native.DbWorker
+	verMap            map[Port]VersionInfo
+	sysUsers          []string
+	newVersion        VersionInfo
+	socketMaps        map[Port]string
+	adminUser         string
+	adminPwd          string
+	oldMysqlLinkMedia string
 }
 
 // Example subcommand example input
@@ -140,7 +141,11 @@ func (m *MysqlUpgradeComp) Init() (err error) {
 			return err
 		}
 	}
-
+	m.oldMysqlLinkMedia, err = os.Readlink(cst.MysqldInstallPath)
+	if err != nil {
+		logger.Error("readlink %s failed:%s", cst.MysqldInstallPath, err.Error())
+		return err
+	}
 	logger.Info("mysql upgrade init ok,new version:%d", m.newVersion.MysqlVersion)
 	return nil
 }
@@ -244,6 +249,72 @@ func (m *MysqlUpgradeComp) MysqlUpgradeCheck() (err error) {
 		}
 	}
 	return
+}
+
+// DoMySQLCheck do mysql check
+func (m *MysqlUpgradeComp) DoMySQLCheck() (err error) {
+	for port, conn := range m.dbConns {
+		logger.Info("do upgrade and replace my.cnf for %d", port)
+		if err = m.upgradeMycnf(port); err != nil {
+			return err
+		}
+		logger.Info("do upgrade %d mysql old password", port)
+		if err = m.upgradeOldPassword(conn, port); err != nil {
+			return err
+		}
+		socket, ok := m.socketMaps[port]
+		if !ok {
+			return fmt.Errorf("get socket from socket map failed")
+		}
+		// shutfown mysql
+		logger.Info("do shutdown mysql for %d", port)
+		if err = computil.ShutdownMySQLBySocket(m.adminUser, m.adminPwd, socket); err != nil {
+			logger.Error("shutdown mysql %d failed %s", port, err.Error())
+			return err
+		}
+	}
+	logger.Info("upgrade mysql install bin...")
+	// relink mysql
+	if err = m.relinkMysql(); err != nil {
+		logger.Info("failed to replace mysql media %s", err.Error())
+		return err
+	}
+	for _, port := range m.Params.Ports {
+		start := computil.StartMySQLParam{
+			Host:      m.Params.Host,
+			Port:      port,
+			Socket:    m.socketMaps[port],
+			MySQLUser: m.adminUser,
+			MySQLPwd:  m.adminPwd,
+
+			MyCnfName: util.GetMyCnfFileName(port),
+			MediaDir:  cst.MysqldInstallPath,
+		}
+		logger.Info("start mysql for %d", port)
+		pid, err := start.StartMysqlInsSpecialErrlog(fmt.Sprintf("/tmp/relink-media-firsrt-start-%d.log", port))
+		if err != nil {
+			logger.Error("start mysql %d failed %s", err.Error())
+			return err
+		}
+		logger.Info("start mysql success,pid is %d", pid)
+		logger.Error("reconnect mysql ")
+		dbConn, err := native.InsObject{
+			Host: m.Params.Host,
+			Port: port,
+			User: m.adminUser,
+			Pwd:  m.adminPwd,
+		}.Conn()
+		if err != nil {
+			logger.Error("Connect %d failed:%s", port, err.Error())
+			return err
+		}
+		logger.Info("do mysqlcheck  for %d", port)
+		if err = m.mysqlCheck(dbConn, port); err != nil {
+			logger.Error("do %d mysqlcheck failed %s", port, err.Error())
+			return err
+		}
+	}
+	return nil
 }
 
 // Upgrade do upgrade
