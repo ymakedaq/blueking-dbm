@@ -108,6 +108,7 @@ type installMySQLConfig struct {
 	RenderConfigs           map[Port]RenderConfigs
 	InsInitDirs             map[Port]InitDirs
 	InsSockets              map[Port]socket
+	insDefaultEngine        map[Port]string
 	SpiderAutoIncrModeMap   map[Port]SpiderAutoIncrModeValue
 	Checkfunc               []func() error
 }
@@ -128,6 +129,8 @@ type Mysqld struct {
 	ServerId                     uint64                  `json:"server_id"`
 	InnodbBufferPoolSize         string                  `json:"innodb_buffer_pool_size"`
 	SpiderAutoIncrementModeValue SpiderAutoIncrModeValue `json:"spider_auto_increment_mode_value"`
+	// rocksdb config item
+	RocksdbBlockCacheSize string `json:"rocksdb_block_cache_size"`
 }
 
 // Example subcommand example input
@@ -157,14 +160,12 @@ func (i *InstallMySQLComp) Example() interface{} {
 	return comp
 }
 
-// InitDefaultParam TODO
+// InitDefaultParam init default param
 func (i *InstallMySQLComp) InitDefaultParam() (err error) {
 	i.WorkUser = "root"
 	i.WorkPassword = ""
 	i.AvoidReset = false
-
 	i.Params.MyCnfConfigs = i.MySQLConfigParams.MyCnfConfigs
-	var mountpoint string
 	i.InstallDir = cst.UsrLocal
 	i.MysqlInstallDir = cst.MysqldInstallPath
 	i.TdbctlInstallDir = cst.TdbctlInstallPath
@@ -176,11 +177,67 @@ func (i *InstallMySQLComp) InitDefaultParam() (err error) {
 	// 计算获取需要安装的ports
 	i.InsPorts = i.Params.Ports
 	i.MyCnfTpls = make(map[int]*util.CnfFile)
+	i.insDefaultEngine = make(map[int]string)
 	// 获取系统内存,计算实例内存大小
 	if err = i.initMySQLInstanceMem(); err != nil {
 		return err
 	}
-	// var findMountPoint func(paths ...string) (string, error)
+	// 选择安装目录
+	if err = i.chooseDir(); err != nil {
+		return err
+	}
+	// 反序列化mycnf 配置
+	var mycnfs map[Port]json.RawMessage
+	if err = json.Unmarshal(i.Params.MyCnfConfigs, &mycnfs); err != nil {
+		logger.Error("反序列化配置失败:%s", err.Error())
+		return err
+	}
+
+	for _, port := range i.InsPorts {
+		var cnfraw json.RawMessage
+		var ok bool
+		if cnfraw, ok = mycnfs[port]; !ok {
+			return fmt.Errorf("参数中没有%d的配置", port)
+		}
+		var mycnf mysqlutil.MycnfObject
+		if err = json.Unmarshal(cnfraw, &mycnf); err != nil {
+			logger.Error("反序列%d 化配置失败:%s", port, err.Error())
+			return err
+		}
+		i.insDefaultEngine[port] = mycnf.GetDefaultEngine()
+		cnftpl, ierr := util.NewMyCnfObject(mycnf, "tpl")
+		if ierr != nil {
+			logger.Error("初始化mycnf ini 模版:%s", ierr.Error())
+			return ierr
+		}
+		i.MyCnfTpls[port] = cnftpl
+	}
+
+	// 如果SpiderAutoIncrModeMap有传入，则渲染
+	if i.Params.SpiderAutoIncrModeMap != nil {
+		i.SpiderAutoIncrModeMap = make(map[int]SpiderAutoIncrModeValue)
+		if err = json.Unmarshal(i.Params.SpiderAutoIncrModeMap, &i.SpiderAutoIncrModeMap); err != nil {
+			logger.Error("反序列化配置失败:%s", err.Error())
+			return err
+		}
+	}
+
+	// 计算需要替换的参数配置
+	if err := i.initInsReplaceMyConfigs(); err != nil {
+		return err
+	}
+	i.Checkfunc = append(i.Checkfunc, i.CheckTimeZoneSetting)
+	i.Checkfunc = append(i.Checkfunc, i.precheckMysqlDir)
+	i.Checkfunc = append(i.Checkfunc, i.precheckMysqlProcess)
+	i.Checkfunc = append(i.Checkfunc, i.precheckMysqlPackageBitOS)
+	i.Checkfunc = append(i.Checkfunc, i.precheckGlibcVersion)
+	i.Checkfunc = append(i.Checkfunc, i.Params.Medium.Check)
+	return nil
+}
+
+// chooseDir 选择合适的目录
+func (i *InstallMySQLComp) chooseDir() (err error) {
+	var mountpoint string
 	if i.Params.GetPkgTypeName() != cst.PkgTypeMysql {
 		// 日志目录优先放在 /data 盘下
 		mountpoint, err = osutil.FindFirstMountPointProxy(cst.DefaultMysqlLogRootPath, cst.AlterNativeMysqlLogRootPath)
@@ -221,52 +278,7 @@ func (i *InstallMySQLComp) InitDefaultParam() (err error) {
 		i.LogRootPath = mountpoint
 		i.LogBaseDir = path.Join(mountpoint, cst.DefaultMysqlLogBasePath)
 	}
-	// 反序列化mycnf 配置
-	var mycnfs map[Port]json.RawMessage
-	if err = json.Unmarshal(i.Params.MyCnfConfigs, &mycnfs); err != nil {
-		logger.Error("反序列化配置失败:%s", err.Error())
-		return err
-	}
-
-	for _, port := range i.InsPorts {
-		var cnfraw json.RawMessage
-		var ok bool
-		if cnfraw, ok = mycnfs[port]; !ok {
-			return fmt.Errorf("参数中没有%d的配置", port)
-		}
-		var mycnf mysqlutil.MycnfObject
-		if err = json.Unmarshal(cnfraw, &mycnf); err != nil {
-			logger.Error("反序列%d 化配置失败:%s", port, err.Error())
-			return err
-		}
-		cnftpl, ierr := util.NewMyCnfObject(mycnf, "tpl")
-		if ierr != nil {
-			logger.Error("初始化mycnf ini 模版:%s", ierr.Error())
-			return ierr
-		}
-		i.MyCnfTpls[port] = cnftpl
-	}
-
-	// 如果SpiderAutoIncrModeMap有传入，则渲染
-	if i.Params.SpiderAutoIncrModeMap != nil {
-		i.SpiderAutoIncrModeMap = make(map[int]SpiderAutoIncrModeValue)
-		if err = json.Unmarshal(i.Params.SpiderAutoIncrModeMap, &i.SpiderAutoIncrModeMap); err != nil {
-			logger.Error("反序列化配置失败:%s", err.Error())
-			return err
-		}
-	}
-
-	// 计算需要替换的参数配置
-	if err := i.initInsReplaceMyConfigs(); err != nil {
-		return err
-	}
-	i.Checkfunc = append(i.Checkfunc, i.CheckTimeZoneSetting)
-	i.Checkfunc = append(i.Checkfunc, i.precheckMysqlDir)
-	i.Checkfunc = append(i.Checkfunc, i.precheckMysqlProcess)
-	i.Checkfunc = append(i.Checkfunc, i.precheckMysqlPackageBitOS)
-	i.Checkfunc = append(i.Checkfunc, i.precheckGlibcVersion)
-	i.Checkfunc = append(i.Checkfunc, i.Params.Medium.Check)
-	return nil
+	return err
 }
 
 // PreCheck TODO
@@ -413,25 +425,38 @@ func (i *InstallMySQLComp) initInsReplaceMyConfigs() error {
 			logger.Error("%s:%d generation serverId Failed %s", i.Params.Host, port, err.Error())
 			return err
 		}
-		i.RenderConfigs[port] = RenderConfigs{Mysqld{
-			Datadir:                      insBaseDataDir,
-			Logdir:                       insBaseLogDir,
-			ServerId:                     serverId,
-			Port:                         strconv.Itoa(port),
-			CharacterSetServer:           i.Params.CharSet,
-			InnodbBufferPoolSize:         fmt.Sprintf("%dM", i.Params.InstMem),
-			BindAddress:                  i.Params.Host,
-			SpiderAutoIncrementModeValue: i.SpiderAutoIncrModeMap[port],
-		}}
-
+		engine := i.insDefaultEngine[port]
+		switch strings.ToLower(engine) {
+		case "innodb":
+			i.RenderConfigs[port] = RenderConfigs{Mysqld{
+				Datadir:                      insBaseDataDir,
+				Logdir:                       insBaseLogDir,
+				ServerId:                     serverId,
+				Port:                         strconv.Itoa(port),
+				CharacterSetServer:           i.Params.CharSet,
+				InnodbBufferPoolSize:         fmt.Sprintf("%dM", i.Params.InstMem),
+				BindAddress:                  i.Params.Host,
+				SpiderAutoIncrementModeValue: i.SpiderAutoIncrModeMap[port],
+			}}
+		case "rocksdb":
+			i.RenderConfigs[port] = RenderConfigs{Mysqld{
+				Datadir:                      insBaseDataDir,
+				Logdir:                       insBaseLogDir,
+				ServerId:                     serverId,
+				Port:                         strconv.Itoa(port),
+				CharacterSetServer:           i.Params.CharSet,
+				InnodbBufferPoolSize:         "200M",
+				BindAddress:                  i.Params.Host,
+				RocksdbBlockCacheSize:        fmt.Sprintf("%dM", i.Params.InstMem),
+				SpiderAutoIncrementModeValue: i.SpiderAutoIncrModeMap[port],
+			}}
+		}
 		i.InsInitDirs[port] = append(i.InsInitDirs[port], []string{insBaseDataDir, insBaseLogDir}...)
 	}
 	return nil
-	//	return i.calInsInitDirs()
 }
 
-// getInitDirFromCnf TODO
-// calInsInitDirs  从模板配置获取需要初始化新建的目录
+// getInitDirFromCnf  从模板配置获取需要初始化新建的目录
 func (i *InstallMySQLComp) getInitDirFromCnf() (err error) {
 	// 获取需要初始化目录的模板值
 	initDirTpls := map[string]string{

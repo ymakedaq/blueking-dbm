@@ -21,3 +21,14 @@ type MycnfObject struct {
 	Mysqld57  map[string]string `json:"mysqld-5.7" sectag:"mysqld-5.7"`
 	Mysqld80  map[string]string `json:"mysqld-8.0" sectag:"mysqld-8.0"`
 }
+
+// GetDefaultEngine default engine set
+func (m MycnfObject) GetDefaultEngine() string {
+	if _, ok := m.Mysqld["default-storage-engine"]; ok {
+		return m.Mysqld["default-storage-engine"]
+	}
+	if _, ok := m.Mysqld["default_storage_engine"]; ok {
+		return m.Mysqld["default_storage_engine"]
+	}
+	return ""
+}
