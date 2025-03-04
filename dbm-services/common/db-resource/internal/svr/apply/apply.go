@@ -354,6 +354,22 @@ func (o *SearchContext) predictResourceNoMatchReason() (reason string) {
 		reason += fmt.Sprintf("在匹配云区域%d,gse_agent 状态为ok的资源的时候没有匹配到资源\n\r", o.BkCloudId)
 		return reason
 	}
+	o.MatchSpec(db)
+	if err := db.Scan(&count).Error; err != nil {
+		return
+	}
+	if count < int64(o.Count) {
+		reason += "在匹配规格信息[cpu/mem或机型]的时候没有匹配到资源\n\r"
+		return reason
+	}
+	o.MatchStorage(db)
+	if err := db.Scan(&count).Error; err != nil {
+		return
+	}
+	if count < int64(o.Count) {
+		reason += "在匹配磁盘规格的时候没有匹配到资源\n\r"
+		return reason
+	}
 	o.MatchIntetionBkBiz(db)
 	if err := db.Scan(&count).Error; err != nil {
 		return
@@ -402,22 +418,7 @@ func (o *SearchContext) predictResourceNoMatchReason() (reason string) {
 		reason += "在匹配地域信息的时候没有匹配到资源\n\r"
 		return reason
 	}
-	o.MatchStorage(db)
-	if err := db.Scan(&count).Error; err != nil {
-		return
-	}
-	if count < int64(o.Count) {
-		reason += "在匹配磁盘信息的时候没有匹配到资源\n\r"
-		return reason
-	}
-	o.MatchSpec(db)
-	if err := db.Scan(&count).Error; err != nil {
-		return
-	}
-	if count < int64(o.Count) {
-		reason += "在匹配规格信息[cpu/mem或机型]的时候没有匹配到资源\n\r"
-		return reason
-	}
+
 	switch o.Affinity {
 	// 如果需要存在跨园区检查则需要判断是否存在网卡id,机架id等
 	case SAME_SUBZONE_CROSS_SWTICH:
