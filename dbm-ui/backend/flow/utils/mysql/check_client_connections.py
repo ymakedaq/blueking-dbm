@@ -61,3 +61,34 @@ def check_client_connection(bk_cloud_id: int, instances: list, is_filter_sleep: 
     )
 
     return res
+
+
+def check_long_time_running_connection(bk_cloud_id: int, instances: list):
+    """
+    通过drs接口检测实例是否存在用户线程
+    @param bk_cloud_id: 操作的云区域
+    @param instances: 需要判断的实例列表，每个元素的str:{ip:port}
+    @param is_filter_sleep: 本次检测是否过滤sleep状态的连接，默认不过滤
+    @param is_proxy: 本地检测的节点是否是mysql_proxy节点， 默认不是
+    """
+
+    # 获取内置账号名称
+    admin_user_name_list = [
+        "system user",
+        "event_scheduler",
+        UserName.REPL.value,
+    ]
+    users = ",".join(
+        ["'" + str(x) + "'" for x in MYSQL_SYS_USER + admin_user_name_list + get_mysql_sys_users(bk_cloud_id)]
+    )
+    check_sql = f"select * from information_schema.processlist where command != 'Sleep' and Time > 120 and User not in ({users})"
+    res = DRSApi.rpc(
+        {
+            "addresses": instances,
+            "cmds": [check_sql],
+            "force": False,
+            "bk_cloud_id": bk_cloud_id,
+        }
+    )
+
+    return res
