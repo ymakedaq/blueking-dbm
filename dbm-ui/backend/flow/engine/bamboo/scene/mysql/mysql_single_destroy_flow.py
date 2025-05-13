@@ -27,6 +27,7 @@ from backend.flow.plugins.components.collections.mysql.mysql_db_meta import MySQ
 from backend.flow.plugins.components.collections.mysql.trans_flies import TransFileComponent
 from backend.flow.utils.mysql.mysql_act_dataclass import (
     DBMetaOPKwargs,
+    DelServiceInstByDomainKwargs,
     DelServiceInstKwargs,
     DownloadMediaKwargs,
     ExecActuatorKwargs,
@@ -52,20 +53,20 @@ class MySQLSingleDestroyFlow(object):
         self.data = data
 
     @staticmethod
-    def __get_single_cluster_info(cluster_id: int, bk_biz_id: int) -> dict:
+    def __get_cluster_info_by_domain(domain: str, bk_biz_id: int) -> dict:
         """
         根据cluster_id 获取到单节点集群实例信息，单节点只有一个实例
         @param cluster_id: 需要下架的集群id
         @param bk_biz_id: 需要下架集群的对应的业务id
         """
         try:
-            cluster = Cluster.objects.get(id=cluster_id, bk_biz_id=bk_biz_id)
+            cluster = Cluster.objects.get(immute_domain=domain, bk_biz_id=bk_biz_id)
         except Cluster.DoesNotExist:
-            raise ClusterNotExistException(cluster_id=cluster_id, bk_biz_id=bk_biz_id, message=_("集群不存在"))
+            raise ClusterNotExistException(immute_domain=domain, bk_biz_id=bk_biz_id, message=_("集群不存在"))
 
         backend_info = StorageInstance.objects.get(cluster=cluster)
         return {
-            "id": cluster_id,
+            "id": cluster.id,
             "name": cluster.name,
             "backend_port": backend_info.port,
             "backend_ip": backend_info.machine.ip,
@@ -170,3 +171,86 @@ class MySQLSingleDestroyFlow(object):
 
         mysql_single_destroy_pipeline.add_parallel_sub_pipeline(sub_flow_list=sub_pipelines)
         mysql_single_destroy_pipeline.run_pipeline(is_drop_random_user=False)
+
+    def destroy_mysql_single_subflow(self, ip, port, bk_cloud_id, bk_biz_id, domain):
+        """
+        定义mysql单节点版下架子流程
+        """
+        sub_pipeline = SubBuilder(root_id=self.root_id, data=self.data)
+
+        sub_pipeline.add_act(
+            act_name=_("删除注册CC系统的服务实例"),
+            act_component_code=DelCCServiceInstComponent.code,
+            kwargs=asdict(
+                DelServiceInstByDomainKwargs(
+                    domain=domain,
+                    del_instance_list=[{"ip": ip, "port": port}],
+                )
+            ),
+        )
+
+        sub_pipeline.add_act(
+            act_name=_("下发db-actuator介质"),
+            act_component_code=TransFileComponent.code,
+            kwargs=asdict(
+                DownloadMediaKwargs(
+                    bk_cloud_id=bk_cloud_id,
+                    exec_ip=ip,
+                    file_list=GetFileList(db_type=DBType.MySQL).get_db_actuator_package(),
+                )
+            ),
+        )
+
+        sub_pipeline.add_act(
+            act_name=_("清理实例级别周边配置"),
+            act_component_code=ExecuteDBActuatorScriptComponent.code,
+            kwargs=asdict(
+                ExecActuatorKwargs(
+                    exec_ip=ip,
+                    cluster_type=ClusterType.TenDBSingle,
+                    bk_cloud_id=bk_cloud_id,
+                    cluster={"backend_port": port},
+                    get_mysql_payload_func=MysqlActPayload.get_clear_surrounding_config_payload.__name__,
+                )
+            ),
+        )
+
+        sub_pipeline.add_act(
+            act_name=_("卸载mysql实例"),
+            act_component_code=ExecuteDBActuatorScriptComponent.code,
+            kwargs=asdict(
+                ExecActuatorKwargs(
+                    exec_ip=ip,
+                    cluster_type=ClusterType.TenDBSingle,
+                    bk_cloud_id=bk_cloud_id,
+                    cluster={"backend_port": port},
+                    get_mysql_payload_func=MysqlActPayload.get_uninstall_mysql_payload.__name__,
+                )
+            ),
+        )
+
+        sub_pipeline.add_act(
+            act_name=_("清理db_meta元信息"),
+            act_component_code=MySQLDBMetaComponent.code,
+            kwargs=asdict(
+                DBMetaOPKwargs(
+                    db_meta_class_func=MySQLDBMeta.mysql_single_destroy_by_domain.__name__,
+                    cluster={"domain": domain, "bk_biz_id": bk_biz_id},
+                )
+            ),
+        )
+
+        sub_pipeline.add_act(
+            act_name=_("清理机器配置"),
+            act_component_code=MySQLClearMachineComponent.code,
+            kwargs=asdict(
+                ExecActuatorKwargs(
+                    exec_ip=ip,
+                    cluster_type=ClusterType.TenDBSingle,
+                    bk_cloud_id=bk_cloud_id,
+                    get_mysql_payload_func=MysqlActPayload.get_clear_machine_crontab.__name__,
+                )
+            ),
+        )
+
+        return sub_pipeline.build_sub_process(sub_name=_("下架MySQL单节点集群[{}]").format(ip))

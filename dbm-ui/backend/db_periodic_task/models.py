@@ -19,6 +19,7 @@ from django_celery_beat.schedulers import ModelEntry
 
 from backend.bk_web import constants
 from backend.bk_web.models import AuditedModel
+from backend.db_meta.enums import ClusterType
 from backend.db_periodic_task.constants import PeriodicTaskType
 
 logger = logging.getLogger("root")
@@ -80,3 +81,38 @@ class DBPeriodicTask(AuditedModel):
                 celery_task.args = _args
                 celery_task.kwargs = _kwargs
                 celery_task.save(update_fields=[model_field, "args", "kwargs"])
+
+
+class MySQLBackupRollbackTask(AuditedModel):
+    """
+    MySQL备份定期回档演练
+    """
+
+    bk_biz_id = models.IntegerField(_("演练业务ID"), default=0)
+    cluster_id = models.IntegerField(_("备份来源集群ID"), default=0)
+    cluster_domain = models.CharField(_("备份来源域名"), max_length=constants.LEN_LONG, default="")
+    cluster_type = models.CharField(max_length=64, choices=ClusterType.get_choices(), default="")
+    backup_id = models.CharField(_("备份ID"), max_length=constants.LEN_LONG, default="")
+    backup_begin_time = models.DateTimeField(_("备份开始时间"), default=None)
+    backup_end_time = models.DateTimeField(_("备份结束时间"), default=None)
+    backup_total_size = models.IntegerField(_("备份总大小"), default=0)
+    time_zone = models.CharField(_("时区"), max_length=constants.LEN_SHORT, default="")
+    task_status = models.CharField(_("任务状态"), max_length=constants.LEN_SHORT, default="")
+    # 关联单据id
+    ticket_id = models.IntegerField(_("关联单据ID"), default=0)
+    # 关联单据执行状态
+    ticket_status = models.CharField(_("关联单据状态"), max_length=constants.LEN_SHORT, default="")
+
+    @classmethod
+    def get_all_practiced_biz_ids(cls):
+        """
+        获取已经回档过的所有业务ID
+        """
+        return cls.objects.values_list("bk_biz_id", flat=True).distinct()
+
+    @classmethod
+    def get_all_practiced_cluster_ids(cls):
+        """
+        获取已经回档过的所有集群ID
+        """
+        return cls.objects.values_list("cluster_id", flat=True).distinct()
