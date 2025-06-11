@@ -194,15 +194,25 @@ func Doimport(param ImportMachParam, requestId string) (resp *ImportHostResp, er
 			logger.Warn("query cvm info failed %s", verr.Error())
 		}
 	}
+	// add debug  log
+	for ip, diskctc := range diskResp.IpLogContentMap {
+		logger.Info("ip:%s get disk info %v", ip, diskctc)
+	}
 	for _, h := range ccHostsInfo {
 		delete(hostsMap, h.InnerIP)
 		el := param.transHostInfoToDbModule(h, h.BkCloudId, lableJson)
+		logger.Info("ip:%s before set disk %s", h.InnerIP, string(el.StorageDevice))
 		el.SetMore(h.InnerIP, diskResp.IpLogContentMap)
+		logger.Info("ip:%s after set disk %s", h.InnerIP, string(el.StorageDevice))
 		bkHostIds = append(bkHostIds, h.BKHostId)
 		if v, ok := cvmInfoMap[h.InnerIP]; ok {
 			el.DramCap = v.Memory * 1000
 		}
 		elems = append(elems, el)
+	}
+	// debug log
+	for _, item := range elems {
+		logger.Info("ip:%s save resource %s", item.IP, string(item.StorageDevice))
 	}
 	if err = model.DB.Self.Table(model.TbRpDetailName()).Create(elems).Error; err != nil {
 		logger.Error("failed to save resource: %s", err.Error())
