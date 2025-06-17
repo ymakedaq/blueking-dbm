@@ -96,12 +96,13 @@ class MySQLBackupRollbackTask(AuditedModel):
     backup_begin_time = models.DateTimeField(_("备份开始时间"), default=None)
     backup_end_time = models.DateTimeField(_("备份结束时间"), default=None)
     backup_total_size = models.IntegerField(_("备份总大小"), default=0)
+    backup_type = models.CharField(_("备份类型"), max_length=constants.LEN_SHORT, default="")
+    backup_tool = models.CharField(_("备份工具"), max_length=constants.LEN_SHORT, default="")
     time_zone = models.CharField(_("时区"), max_length=constants.LEN_SHORT, default="")
-    task_status = models.CharField(_("任务状态"), max_length=constants.LEN_SHORT, default="")
     # 关联单据id
-    ticket_id = models.IntegerField(_("关联单据ID"), default=0)
-    # 关联单据执行状态
-    ticket_status = models.CharField(_("关联单据状态"), max_length=constants.LEN_SHORT, default="")
+    task_id = models.IntegerField(_("关联的任务ID"), default=0)
+    task_status = models.CharField(_("任务状态"), max_length=constants.LEN_SHORT, default="")
+    task_info = models.TextField(_("任务信息"), default="")
 
     @classmethod
     def get_all_practiced_biz_ids(cls):

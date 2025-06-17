@@ -14,8 +14,12 @@ from celery.schedules import crontab
 
 from backend.db_periodic_task.local_tasks import register_periodic_task
 
+from .gen_task import gen_rollback_task
 
-@register_periodic_task(run_every=crontab(minute="*"))
-def backup_data_rollbackup_task():
-    logger = logging.getLogger(__name__)
-    logger.info("backup_data_rollbackup_task")
+logger = logging.getLogger("root")
+
+
+@register_periodic_task(run_every=crontab(minute="10"))
+def backup_data_recovry_task():
+    logger.info("start backup data recovry task")
+    gen_rollback_task()
