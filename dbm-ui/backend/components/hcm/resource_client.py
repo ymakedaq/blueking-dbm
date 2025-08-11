@@ -40,6 +40,11 @@ class _HCMResourceApi(BaseApi):
             url="/api/v1/task/get_apply_status",
             description=_("获取资源申请单据状态"),
         )
+        self.get_cvm_capacity = self.generate_data_api(
+            method="POST",
+            url="/api/v1/config/get_cvm_capacity",
+            description=_("资源最大可申请量查询"),
+        )
 
     def create_apply_order(self, apply_data: dict):
         """
@@ -300,6 +305,75 @@ class _HCMResourceApi(BaseApi):
 
         try:
             resp = self.get_apply_status(params={"order_id": order_id})
+            return resp
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def get_cvm_capacity_info(
+        self, require_type: int, region: str, zone: str, device_type: str, vpc: str = None, subnet: str = None
+    ):
+        """
+        资源最大可申请量查询。
+
+        :param require_type: int，需求类型。1:常规项目;2:春节保障;3:机房裁撤
+        :param region: str，地域
+        :param zone: str，可用区
+        :param device_type: str，机型
+        :param vpc: str，vpc。若vpc为空,则返回IEG默认vpc的最大可申领量
+        :param subnet: str，子网。若vpc不为空且subnet为空,则返回vpc下所有子网的最大可申领量
+
+        请求参数：
+        - require_type (int): 需求类型，必选。1:常规项目;2:春节保障;3:机房裁撤
+        - region (string): 地域，必选
+        - zone (string): 可用区，必选
+        - device_type (string): 机型，必选
+        - vpc (string, 可选): vpc。若vpc为空,则返回IEG默认vpc的最大可申领量
+        - subnet (string, 可选): 子网。若vpc不为空且subnet为空,则返回vpc下所有子网的最大可申领量
+
+        调用示例：
+        {
+            "require_type": 1,
+            "region": "ap-guangzhou",
+            "zone": "ap-guangzhou-3",
+            "device_type": "SA3.2XLARGE32",
+            "vpc": "vpc-******",
+            "subnet": "subnet-******"
+        }
+
+        返回参数：
+        - response: dict，包含服务器的响应数据，示例：
+            {
+                "result": true,
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "max_capacity": 100
+                }
+            }
+
+        响应参数说明：
+        - result (bool): 请求成功与否。true:请求成功；false请求失败
+        - code (int): 错误编码。0表示success，>0表示失败错误
+        - message (string): 请求失败返回的错误信息
+        - data (object): 请求返回的数据
+            - max_capacity (int): 最大可申请量
+
+        :return: dict，服务器的响应数据
+        """
+        if not HCM_APIGW_DOMAIN:
+            return {"status": "error", "message": "HCM API domain not configured"}
+
+        # 构建请求参数
+        params = {"require_type": require_type, "region": region, "zone": zone, "device_type": device_type}
+
+        # 添加可选参数
+        if vpc is not None:
+            params["vpc"] = vpc
+        if subnet is not None:
+            params["subnet"] = subnet
+
+        try:
+            resp = self.get_cvm_capacity(params=params)
             return resp
         except Exception as e:
             return {"status": "error", "message": str(e)}
