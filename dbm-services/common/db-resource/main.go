@@ -128,7 +128,7 @@ func registerCrontab(localcron *cron.Cron) {
 		},
 		{
 			Name: "扫描检查主机是否被手动拿去用了",
-			Spec: "@every 2h",
+			Spec: "@every 2m",
 			Func: func() {
 				logger.Info("Start scan check resource .....")
 				if err := task.InspectCheckResource(); err != nil {
