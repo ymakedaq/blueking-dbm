@@ -71,7 +71,9 @@ class MySQLSingleApplyFlow(object):
         pipeline.add_sub_pipeline(sub_flow=self.deploy_mysql_single_flow())
         pipeline.run_pipeline(init_trans_data_class=SingleApplyManualContext())
 
-    def deploy_mysql_single_flow(self, origin_cluster_domain: str = "") -> SubBuilder:
+    def deploy_mysql_single_flow(
+        self, origin_cluster_domain: str = "", just_install_backup: bool = False
+    ) -> SubBuilder:
         """
         定义部署单节点集群的流程，资源是通过手动录入方式，兼容单机多实例的部署
         目前资源池已经在saas层适配，目前flow统一为手动模式即可
@@ -186,17 +188,25 @@ class MySQLSingleApplyFlow(object):
 
         mysql_single_pipeline.add_parallel_sub_pipeline(sub_flow_list=sub_pipelines)
 
-        mysql_single_pipeline.add_sub_pipeline(
-            sub_flow=standardize_mysql_cluster_subflow(
-                root_id=self.root_id,
-                data=copy.deepcopy(self.data),
-                bk_cloud_id=self.data["bk_cloud_id"],
-                bk_biz_id=self.data["bk_biz_id"],
-                instances=instances,
-                with_actuator=False,
-                with_bk_plugin=False,
+        if just_install_backup:
+            exec_act_kwargs.exec_ip = [info["new_ip"]["ip"]]
+            mysql_single_pipeline.add_act(
+                act_name=_("安装临时备份程序"),
+                act_component_code=ExecuteDBActuatorScriptComponent.code,
+                kwargs=asdict(exec_act_kwargs),
             )
-        )
+        else:
+            mysql_single_pipeline.add_sub_pipeline(
+                sub_flow=standardize_mysql_cluster_subflow(
+                    root_id=self.root_id,
+                    data=copy.deepcopy(self.data),
+                    bk_cloud_id=self.data["bk_cloud_id"],
+                    bk_biz_id=self.data["bk_biz_id"],
+                    instances=instances,
+                    with_actuator=False,
+                    with_bk_plugin=False,
+                )
+            )
         if origin_cluster_domain:
             sub_name = _("【{}】模版集群的演练部署流程".format(origin_cluster_domain))
         else:
