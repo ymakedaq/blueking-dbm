@@ -9,6 +9,7 @@ specific language governing permissions and limitations under the License.
 """
 import copy
 import datetime
+from collections import defaultdict
 from dataclasses import asdict
 from datetime import timedelta
 from typing import Dict, List
@@ -85,15 +86,13 @@ def build_mysql_upgrade_pipelines(
     processed_instances = []
 
     # 按IP分组，收集同一IP的所有端口
-    ip_ports_map = {}
-    ip_shard_map = {}
+    ip_ports_map = defaultdict(list)
+    ip_shard_map = defaultdict(list)
     for pair in master_slave_pairs:
         instance_info = pair.get(role_type)
         if instance_info:
             ip = instance_info["ip"]
             port = instance_info["port"]
-            if ip not in ip_ports_map:
-                ip_ports_map[ip] = []
             ip_ports_map[ip].append(port)
             ip_shard_map[ip].append(pair["shard_id"])
     # 为每个IP创建升级子流程
