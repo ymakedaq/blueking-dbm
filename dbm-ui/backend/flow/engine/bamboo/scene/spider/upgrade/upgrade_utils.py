@@ -156,8 +156,8 @@ def group_master_slave_pairs(cluster_id: int):
     cluster = Cluster.objects.get(id=cluster_id)
 
     # 获取所有remote存储实例（与get_remote_storage_instances返回类型一致）
-    # 通过shard来获取主从配对关系
-    shards = cluster.tendbclusterstorageset_set.filter()
+    # 通过shard来获取主从配对关系，按shard_id从小到大排序
+    shards = cluster.tendbclusterstorageset_set.filter().order_by("shard_id")
     for shard in shards:
         try:
             # 获取master实例
@@ -170,11 +170,11 @@ def group_master_slave_pairs(cluster_id: int):
 
             slave_info = {"ip": remote_slave.machine.ip, "port": remote_slave.port, "instance": remote_slave}
 
-            pairs.append({"master": master_info, "slave": slave_info, "shard_id": shard.id})
+            pairs.append({"master": master_info, "slave": slave_info, "shard_id": shard.shard_id})
 
         except StorageInstance.DoesNotExist:
             logger = logging.getLogger("flow")
-            logger.warning(_("shard {} 的主从实例不存在").format(shard.id))
+            logger.warning(_("shard {} 的主从实例不存在").format(shard.shard_id))
             continue
 
     return pairs, all_instances
