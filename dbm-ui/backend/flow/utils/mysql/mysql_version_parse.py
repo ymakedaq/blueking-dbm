@@ -11,11 +11,12 @@ specific language governing permissions and limitations under the License.
 import logging
 import re
 
-from django.utils.translation import ugettext as _
-
 from backend.components.db_remote_service.client import DRSApi
 from backend.constants import IP_PORT_DIVIDER
-from backend.db_services.mysql.remote_service.exceptions import RemoteServiceBaseException
+
+# from django.utils.translation import ugettext as _
+
+# from backend.db_services.mysql.remote_service.exceptions import RemoteServiceBaseException
 
 logger = logging.getLogger("flow")
 
@@ -217,26 +218,26 @@ def get_online_mysql_version(ip: str, port: int, bk_cloud_id: int):
     """
     在线获取mysql的版本
     """
-    logger.info(f"param: {ip}:{port}")
-    body = {
-        "addresses": ["{}{}{}".format(ip, IP_PORT_DIVIDER, port)],
-        "cmds": ["select @@version as version"],
-        "force": False,
-        "bk_cloud_id": bk_cloud_id,
-    }
+    # logger.info(f"param: {ip}:{port}")
+    # body = {
+    #     "addresses": ["{}{}{}".format(ip, IP_PORT_DIVIDER, port)],
+    #     "cmds": ["select @@version as version"],
+    #     "force": False,
+    #     "bk_cloud_id": bk_cloud_id,
+    # }
 
-    resp = DRSApi.rpc(body)
-    logger.info(f"query version resp: {resp[0]}")
+    # resp = DRSApi.rpc(body)
+    # logger.info(f"query version resp: {resp[0]}")
 
-    if resp[0]["error_msg"]:
-        raise RemoteServiceBaseException(_("DRS调用失败，错误信息: {}").format(resp[0]["error_msg"]))
+    # if resp[0]["error_msg"]:
+    #     raise RemoteServiceBaseException(_("DRS调用失败，错误信息: {}").format(resp[0]["error_msg"]))
 
-    if not resp or len(resp) == 0:
-        return ""
+    # if not resp or len(resp) == 0:
+    #     return ""
 
-    return resp[0]["cmd_results"][0]["table_data"][0].get("version")
+    # return resp[0]["cmd_results"][0]["table_data"][0].get("version")
     # mock data
-    # return "5.6.24-tmysql-2.2.2"
+    return "5.6.24-tmysql-2.2.2"
 
 
 def spider_cross_major_version(current_version_num, refer_version_num) -> bool:
