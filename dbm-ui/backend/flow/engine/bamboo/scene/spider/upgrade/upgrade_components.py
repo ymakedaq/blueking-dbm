@@ -60,7 +60,16 @@ def build_mysql_upgrade_pipelines(
     构建MySQL升级子流程列表
 
     Args:
-        master_slave_pairs: 主从配对列表
+        master_slave_pairs:
+            - master: 主实例信息字典
+                - ip: 主实例IP地址 (str)
+                - port: 主实例端口号 (int)
+                - instance: 主实例StorageInstance对象
+            - slave: 从实例信息字典
+                - ip: 从实例IP地址 (str)
+                - port: 从实例端口号 (int)
+                - instance: 从实例StorageInstance对象
+            - shard_id: shard的ID (int)
         role_type: 角色类型，'master' 或 'slave'
         action_name: 操作名称，用于日志记录
         is_same_tmysql_version: 是否相同tmysql版本
@@ -77,6 +86,7 @@ def build_mysql_upgrade_pipelines(
 
     # 按IP分组，收集同一IP的所有端口
     ip_ports_map = {}
+    ip_shard_map = {}
     for pair in master_slave_pairs:
         instance_info = pair.get(role_type)
         if instance_info:
@@ -85,14 +95,16 @@ def build_mysql_upgrade_pipelines(
             if ip not in ip_ports_map:
                 ip_ports_map[ip] = []
             ip_ports_map[ip].append(port)
-
+            ip_shard_map[ip].append(pair["shard_id"])
     # 为每个IP创建升级子流程
     for ip, ports in ip_ports_map.items():
         # 构建子流程名称
         if len(ports) == 1:
-            sub_name = _("{} {}:{}").format(action_name, ip, ports[0])
+            sub_name = _("{} shards:{} {}:{}").format(action_name, ",".join(map(str, ip_shard_map[ip])), ip, ports[0])
         else:
-            sub_name = _("{} {}:{}").format(action_name, ip, ",".join(map(str, ports)))
+            sub_name = _("{} shards:{} {}:{}").format(
+                action_name, ",".join(map(str, ip_shard_map[ip])), ip, ",".join(map(str, ports))
+            )
 
         # 创建升级子流程，传递所有端口
         upgrade_pipeline = build_upgrade_mysql_subflow(

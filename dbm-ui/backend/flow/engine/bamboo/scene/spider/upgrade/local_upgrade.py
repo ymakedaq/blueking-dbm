@@ -35,7 +35,6 @@ from .upgrade_utils import (
     check_master_slave_pair,
     check_version_compatibility,
     convert_pairs_to_upgrade_instances,
-    get_remote_storage_instances,
     group_master_slave_pairs,
 )
 
@@ -114,11 +113,8 @@ class TenDBClusterStorageLocalUpgradeFlow(object):
             root_id=self.root_id, data=copy.deepcopy(self.ticket_data), need_random_pass_cluster_ids=[cluster_id]
         )
 
-        # 获取集群的remote存储实例
-        remote_storage_instances = get_remote_storage_instances(cluster_id)
-
-        # 按主从分组
-        master_slave_pairs = group_master_slave_pairs(remote_storage_instances)
+        # 按主从分组，同时获取所有实例
+        master_slave_pairs, remote_storage_instances = group_master_slave_pairs(cluster_id)
 
         # 转换为升级检查所需的格式
         upgrade_instances = convert_pairs_to_upgrade_instances(master_slave_pairs)
@@ -219,15 +215,8 @@ class TenDBClusterStorageLocalUpgradeFlow(object):
         if not Cluster.objects.filter(id=cluster_id).exists():
             raise DBMetaException(message=_("集群 {} 不存在").format(cluster_id))
 
-        # 获取集群的remote存储实例
-        remote_storage_instances = get_remote_storage_instances(cluster_id)
-        if not remote_storage_instances:
-            raise DBMetaException(message=_("集群 {} 没有找到remote存储实例").format(cluster_id))
-
-        # 按主从分组并检查
-        master_slave_pairs = group_master_slave_pairs(remote_storage_instances)
-        if not master_slave_pairs:
-            raise DBMetaException(message=_("集群 {} 没有找到有效的主从实例对").format(cluster_id))
+        # 按主从分组，同时获取所有实例
+        master_slave_pairs, remote_storage_instances = group_master_slave_pairs(cluster_id)
 
         logger.info(_("集群 {} 共发现 {} 个主从对").format(cluster_id, len(master_slave_pairs)))
 

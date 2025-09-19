@@ -17,9 +17,9 @@ from django.utils.translation import gettext as _
 
 from backend.configuration.constants import DBType, MySQLMonitorPauseTime
 from backend.constants import IP_PORT_DIVIDER
-from backend.db_meta.enums import InstanceInnerRole, InstanceRole, InstanceStatus, MachineType, TenDBClusterSpiderRole
+from backend.db_meta.enums import InstanceInnerRole, InstanceStatus, MachineType, TenDBClusterSpiderRole
 from backend.db_meta.exceptions import DBMetaException
-from backend.db_meta.models import Cluster, ProxyInstance, StorageInstanceTuple
+from backend.db_meta.models import Cluster, ProxyInstance, StorageInstance, StorageInstanceTuple
 from backend.db_package.models import Package
 from backend.flow.consts import MediumEnum
 from backend.flow.engine.bamboo.scene.common.get_file_list import GetFileList
@@ -128,62 +128,56 @@ def check_version_compatibility(cluster_id: int, new_mysql_pkg: Package, ticket_
         raise DBMetaException(message=_("集群 {} 版本兼容性检查失败: {}").format(cluster_id, str(e)))
 
 
-def get_remote_storage_instances(cluster_id: int):
+def group_master_slave_pairs(cluster_id: int):
     """
-    获取集群的remote存储实例
+    将实例按主从配对分组（基于TenDBCluster的shard架构）
 
     Args:
         cluster_id: 集群ID
 
     Returns:
-        QuerySet: remote存储实例查询集
-    """
-    cluster = Cluster.objects.get(id=cluster_id)
-    return cluster.storageinstance_set.filter(
-        machine_type=MachineType.REMOTE, instance_role__in=[InstanceRole.REMOTE_MASTER, InstanceRole.REMOTE_SLAVE]
-    ).select_related("machine")
-
-
-def group_master_slave_pairs(instances):
-    """
-    将实例按主从配对分组
-
-    Args:
-        instances: 存储实例查询集
-
-    Returns:
-        list: 主从配对列表
+        tuple: (pairs, all_instances)
+            - pairs: 主从配对列表，每个元素包含以下字段：
+                - master: 主实例信息字典
+                    - ip: 主实例IP地址 (str)
+                    - port: 主实例端口号 (int)
+                    - instance: 主实例StorageInstance对象
+                - slave: 从实例信息字典
+                    - ip: 从实例IP地址 (str)
+                    - port: 从实例端口号 (int)
+                    - instance: 从实例StorageInstance对象
+                - shard_id: shard的ID (int)
+            - all_instances: remote存储实例查询集，与get_remote_storage_instances返回类型一致
     """
     pairs = []
-    masters = {}
-    slaves = {}
+    all_instances = []
 
-    for instance in instances:
-        key = f"{instance.machine.ip}:{instance.port}"
-        info = {"ip": instance.machine.ip, "port": instance.port, "instance": instance}
+    # 获取集群对象
+    cluster = Cluster.objects.get(id=cluster_id)
 
-        if instance.instance_inner_role == InstanceInnerRole.MASTER:
-            masters[key] = info
-        elif instance.instance_inner_role == InstanceInnerRole.SLAVE:
-            slaves[key] = info
+    # 获取所有remote存储实例（与get_remote_storage_instances返回类型一致）
+    # 通过shard来获取主从配对关系
+    shards = cluster.tendbclusterstorageset_set.filter()
+    for shard in shards:
+        try:
+            # 获取master实例
+            remote_master = StorageInstance.objects.get(id=shard.storage_instance_tuple.ejector_id)
+            # 获取slave实例
+            remote_slave = StorageInstance.objects.get(id=shard.storage_instance_tuple.receiver_id)
+            all_instances.append(remote_master)
+            all_instances.append(remote_slave)
+            master_info = {"ip": remote_master.machine.ip, "port": remote_master.port, "instance": remote_master}
 
-    # 通过实例的主从关系来配对
-    for master_key, master_info in masters.items():
-        # 查找对应的slave
-        slave_info = None
-        master_instance = master_info["instance"]
+            slave_info = {"ip": remote_slave.machine.ip, "port": remote_slave.port, "instance": remote_slave}
 
-        # 通过StorageInstanceTuple查找对应的slave
-        slave_tuples = master_instance.as_ejector.all()
-        if slave_tuples:
-            slave_instance = slave_tuples[0].receiver
-            slave_key = f"{slave_instance.machine.ip}:{slave_instance.port}"
-            if slave_key in slaves:
-                slave_info = slaves[slave_key]
+            pairs.append({"master": master_info, "slave": slave_info, "shard_id": shard.id})
 
-        pairs.append({"master": master_info, "slave": slave_info})
+        except StorageInstance.DoesNotExist:
+            logger = logging.getLogger("flow")
+            logger.warning(_("shard {} 的主从实例不存在").format(shard.id))
+            continue
 
-    return pairs
+    return pairs, all_instances
 
 
 def convert_pairs_to_upgrade_instances(master_slave_pairs):
