@@ -198,7 +198,7 @@ class TenDBClusterStorageLocalUpgradeFlow(object):
         # 阶段13: 解除告警屏蔽
         add_disable_alarm_shield_act(sub_pipeline)
 
-        return sub_pipeline.build_sub_process(sub_name=_("TenDBCluster集群 {} 存储层本地升级").format(cluster_id))
+        return sub_pipeline.build_sub_process(sub_name=_("{}:本地升级").format(cluster.immute_domain))
 
     def pre_check(self, cluster_id, new_mysql_pkg):
         """
