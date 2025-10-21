@@ -106,6 +106,8 @@ class TaskStatus:
     DEPLOY_SUCCESS = "deploy_success"
     # 演练恢复成功
     RECOVER_SUCCESS = "recover_success"
+    # 演练恢复失败
+    RECOVER_FAILED = "recover_failed"
     # 资源归还成功
     RESOURCE_RETURN_SUCCESS = "resource_return_success"
 

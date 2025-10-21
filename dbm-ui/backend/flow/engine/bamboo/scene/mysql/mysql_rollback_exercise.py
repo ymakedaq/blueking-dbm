@@ -24,7 +24,7 @@ from backend.db_meta.models import Cluster
 from backend.db_package.models import Package
 from backend.db_services.cmdb.biz import get_or_create_resource_module, get_resource_biz
 from backend.flow.consts import MediumEnum, RollbackType
-from backend.flow.engine.bamboo.scene.common.builder import Builder
+from backend.flow.engine.bamboo.scene.common.builder import Builder, Conditions
 from backend.flow.engine.bamboo.scene.common.machine_os_init import insert_host_event
 from backend.flow.engine.bamboo.scene.mysql.common.get_master_config import get_cluster_config
 from backend.flow.engine.bamboo.scene.mysql.common.mysql_resotre_data_sub_flow import tendbha_rollback_data_sub_flow
@@ -33,6 +33,7 @@ from backend.flow.engine.bamboo.scene.mysql.mysql_single_destroy_flow import MyS
 from backend.flow.plugins.components.collections.common.add_alarm_shield import AddAlarmShieldComponent
 from backend.flow.plugins.components.collections.common.external_service import ExternalServiceComponent
 from backend.flow.plugins.components.collections.common.transfer_host_service import TransferHostServiceComponent
+from backend.flow.plugins.components.collections.mysql.check_rollback_status import CheckRollbackStatusComponent
 from backend.flow.plugins.components.collections.mysql.exec_actuator_script import ExecuteDBActuatorScriptComponent
 from backend.flow.plugins.components.collections.mysql.mysql_backup_recovery_exercise import (
     MySQLBackupRecoverTaskMetaComponent,
@@ -248,15 +249,49 @@ class MySQLRollbackExerciseFlow(object):
         pipeline.add_sub_pipeline(sub_flow=rollback_sub_flow)
         mycluster["backupinfo"] = backup_info
 
-        # 更新演练任务状态
-        pipeline.add_act(
-            act_name=_("更新演练任务状态"),
+        # 检查回档执行状态
+        check_act = pipeline.add_act(
+            act_name=_("检查回档执行状态"),
+            act_component_code=CheckRollbackStatusComponent.code,
+            kwargs={},
+            write_payload_var="rollback_status",
+            extend=False,
+            is_remote_rewritable=True,
+        )
+
+        # 创建成功分支节点
+        success_act = pipeline.add_act(
+            act_name=_("更新演练任务状态为成功"),
             act_component_code=MySQLBackupRecoverTaskMetaComponent.code,
             kwargs={
                 "task_id": self.root_id,
                 "task_status": "recover_success",
             },
             is_remote_rewritable=True,
+            extend=False,
+        )
+
+        # 创建失败分支节点
+        failed_act = pipeline.add_act(
+            act_name=_("更新演练任务状态为失败"),
+            act_component_code=MySQLBackupRecoverTaskMetaComponent.code,
+            kwargs={
+                "task_id": self.root_id,
+                "task_status": "recover_failed",
+            },
+            is_remote_rewritable=True,
+            extend=False,
+        )
+
+        # 添加条件网关：根据回档执行结果选择不同分支
+        pipeline.add_conditional_subs(
+            source_act=check_act,
+            conditions=[
+                Conditions(act_object=success_act, express='== "success"'),
+                Conditions(act_object=failed_act, express='== "failed"'),
+            ],
+            name=_("根据回档结果选择分支"),
+            conditions_param="rollback_status",
         )
 
         # 回档成功,回收资源

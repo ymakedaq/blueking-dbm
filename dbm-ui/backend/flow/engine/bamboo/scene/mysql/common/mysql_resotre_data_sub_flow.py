@@ -29,6 +29,7 @@ from backend.flow.engine.bamboo.scene.spider.common.exceptions import (
     TendbGetBinlogFailedException,
 )
 from backend.flow.plugins.components.collections.mysql.exec_actuator_script import ExecuteDBActuatorScriptComponent
+from backend.flow.plugins.components.collections.mysql.mark_rollback_status import MarkRollbackStatusComponent
 from backend.flow.plugins.components.collections.mysql.mysql_check_slave_delay import MySQLCheckSlaveDelayComponent
 from backend.flow.utils.mysql.mysql_act_dataclass import CheckSlaveStatusKwargs, ExecActuatorKwargs
 from backend.flow.utils.mysql.mysql_act_playload import MysqlActPayload
@@ -660,6 +661,14 @@ def tendbha_rollback_data_sub_flow(
             act_component_code=ExecuteDBActuatorScriptComponent.code,
             kwargs=asdict(exec_act_kwargs),
         )
+
+    # 标记回档执行成功
+    sub_pipeline.add_act(
+        act_name=_("标记回档执行成功"),
+        act_component_code=MarkRollbackStatusComponent.code,
+        kwargs={},
+        write_payload_var="rollback_status",
+    )
 
     return backup_info, sub_pipeline.build_sub_process(
         sub_name=_("定点回档 {}:{} ".format(cluster_info["rollback_ip"], cluster_info["rollback_port"]))
