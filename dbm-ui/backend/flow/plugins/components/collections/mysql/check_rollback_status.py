@@ -39,11 +39,8 @@ class CheckRollbackStatusService(BaseService):
             self.log_warning(_("未检测到回档成功标记，判定为失败，状态设置为failed"))
             status = "failed"
 
-        # 将最终状态写入trans_data
-        trans_data.rollback_status = status
-        data.outputs.trans_data = trans_data
-
-        # 同时将状态直接写入outputs，供条件网关使用
+        # 将状态直接写入outputs，供条件网关使用
+        # 注意：不修改trans_data.rollback_status，保持原有状态
         data.outputs.rollback_status = status
 
         # 始终返回True，确保流程继续

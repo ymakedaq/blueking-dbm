@@ -516,7 +516,12 @@ def priv_recover_sub_flow(
 
 
 def tendbha_rollback_data_sub_flow(
-    root_id: str, uid: str, cluster_model: Cluster, cluster_info: dict, backup_info: dict = None
+    root_id: str,
+    uid: str,
+    cluster_model: Cluster,
+    cluster_info: dict,
+    backup_info: dict = None,
+    add_mark_status_act: bool = False,
 ):
     """
     tendbHa 回档流程
@@ -663,12 +668,13 @@ def tendbha_rollback_data_sub_flow(
         )
 
     # 标记回档执行成功
-    sub_pipeline.add_act(
-        act_name=_("标记回档执行成功"),
-        act_component_code=MarkRollbackStatusComponent.code,
-        kwargs={},
-        write_payload_var="rollback_status",
-    )
+    if add_mark_status_act:
+        sub_pipeline.add_act(
+            act_name=_("标记回档执行成功"),
+            act_component_code=MarkRollbackStatusComponent.code,
+            kwargs={},
+            write_payload_var="rollback_status",
+        )
 
     return backup_info, sub_pipeline.build_sub_process(
         sub_name=_("定点回档 {}:{} ".format(cluster_info["rollback_ip"], cluster_info["rollback_port"]))
