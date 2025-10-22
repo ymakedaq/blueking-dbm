@@ -24,7 +24,7 @@ from backend.db_meta.models import Cluster
 from backend.db_package.models import Package
 from backend.db_services.cmdb.biz import get_or_create_resource_module, get_resource_biz
 from backend.flow.consts import MediumEnum, RollbackType
-from backend.flow.engine.bamboo.scene.common.builder import Builder, Conditions
+from backend.flow.engine.bamboo.scene.common.builder import Builder, Conditions, SubBuilder
 from backend.flow.engine.bamboo.scene.common.machine_os_init import insert_host_event
 from backend.flow.engine.bamboo.scene.mysql.common.get_master_config import get_cluster_config
 from backend.flow.engine.bamboo.scene.mysql.common.mysql_resotre_data_sub_flow import tendbha_rollback_data_sub_flow
@@ -42,7 +42,7 @@ from backend.flow.plugins.components.collections.mysql.mysql_os_init import Clea
 from backend.flow.utils.mysql.common.mysql_cluster_info import get_version_and_charset
 from backend.flow.utils.mysql.mysql_act_dataclass import ExecActuatorKwargs
 from backend.flow.utils.mysql.mysql_act_playload import MysqlActPayload
-from backend.flow.utils.mysql.mysql_context_dataclass import SingleApplyManualContext
+from backend.flow.utils.mysql.mysql_context_dataclass import MySQLRollbackExerciseContext
 
 # from backend.flow.plugins.components.collections.common.disable_alarm_shield import DisableAlarmShieldComponent
 
@@ -121,6 +121,13 @@ class MySQLRollbackExerciseFlow(object):
             root_id=self.root_id,
             data=copy.deepcopy(self.ticket_data),
         )
+        sub_flow = self.build_rollback_exercise_flow()
+        pipeline.add_sub_pipeline(sub_flow)
+        # run pipeline
+        pipeline.run_pipeline(init_trans_data_class=MySQLRollbackExerciseContext())
+
+    def build_rollback_exercise_flow(self):
+        sub_pipeline = SubBuilder(root_id=self.root_id, data=copy.deepcopy(self.ticket_data))
         cluster_class = Cluster.objects.get(id=self.ticket_data["exercise_cluster_id"])
         if cluster_class.cluster_type == ClusterType.TenDBCluster.value:
             shard0 = cluster_class.tendbclusterstorageset_set.filter(shard_id=0).first()
@@ -171,7 +178,7 @@ class MySQLRollbackExerciseFlow(object):
             }
         ]
         # 初始化安装mysql
-        pipeline.add_sub_pipeline(
+        sub_pipeline.add_sub_pipeline(
             MySQLSingleApplyFlow(root_id=self.root_id, data=install_ticket).deploy_mysql_single_flow(
                 origin_cluster_domain=cluster_class.immute_domain,
                 with_collect_sysinfo=False,
@@ -180,7 +187,7 @@ class MySQLRollbackExerciseFlow(object):
             )
         )
         # 屏蔽告警
-        pipeline.add_act(
+        sub_pipeline.add_act(
             act_name=_("屏蔽集群 {} 告警12小时").format(cluster_class.name),
             act_component_code=AddAlarmShieldComponent.code,
             kwargs={
@@ -194,19 +201,17 @@ class MySQLRollbackExerciseFlow(object):
                     }
                 ],
             },
-            is_remote_rewritable=True,
         )
         # 更新任务状态
-        pipeline.add_act(
+        sub_pipeline.add_act(
             act_name=_("更新演练任务状态"),
             act_component_code=MySQLBackupRecoverTaskMetaComponent.code,
             kwargs={
                 "task_id": self.root_id,
                 "task_status": "deploy_success",
             },
-            is_remote_rewritable=True,
         )
-        mycluster = {
+        my_cluster = {
             "bk_cloud_id": cluster_class.bk_cloud_id,
             "databases": ["*"],
             "tables": ["*"],
@@ -225,66 +230,62 @@ class MySQLRollbackExerciseFlow(object):
         exec_act_kwargs = ExecActuatorKwargs(
             bk_cloud_id=cluster_class.bk_cloud_id,
             cluster_type=None,
-            cluster=mycluster,
+            cluster=my_cluster,
         )
         exec_act_kwargs.get_mysql_payload_func = MysqlActPayload.mysql_mkdir_dir.__name__
         exec_act_kwargs.exec_ip = self.rollback_host["ip"]
-        pipeline.add_act(
-            act_name=_("创建目录 {}".format(mycluster["file_target_path"])),
+        sub_pipeline.add_act(
+            act_name=_("创建目录 {}".format(my_cluster["file_target_path"])),
             act_component_code=ExecuteDBActuatorScriptComponent.code,
             kwargs=asdict(exec_act_kwargs),
-            is_remote_rewritable=True,
         )
         backup_id = self.data.get("backup_id", None)
         if backup_id is None or backup_id == "":
             backup_id = self.data.get("backup_record", {}).get("backup_id", None)
-        mycluster["backup_id"] = backup_id
+        my_cluster["backup_id"] = backup_id
         backup_info, rollback_sub_flow = tendbha_rollback_data_sub_flow(
             root_id=self.root_id,
             uid=self.ticket_data["uid"],
             cluster_model=cluster_class,
-            cluster_info=mycluster,
+            cluster_info=my_cluster,
             backup_info=self.data.get("backup_record", {}),
         )
-        pipeline.add_sub_pipeline(sub_flow=rollback_sub_flow)
-        mycluster["backupinfo"] = backup_info
+        sub_pipeline.add_sub_pipeline(sub_flow=rollback_sub_flow)
+        my_cluster["backupinfo"] = backup_info
 
         # 检查回档执行状态
-        check_act = pipeline.add_act(
+        check_act = sub_pipeline.add_act(
             act_name=_("检查回档执行状态"),
             act_component_code=CheckRollbackStatusComponent.code,
             kwargs={},
             write_payload_var="rollback_status",
             extend=False,
-            is_remote_rewritable=True,
         )
 
         # 创建成功分支节点
-        success_act = pipeline.add_act(
+        success_act = sub_pipeline.add_act(
             act_name=_("更新演练任务状态为成功"),
             act_component_code=MySQLBackupRecoverTaskMetaComponent.code,
             kwargs={
                 "task_id": self.root_id,
                 "task_status": "recover_success",
             },
-            is_remote_rewritable=True,
             extend=False,
         )
 
         # 创建失败分支节点
-        failed_act = pipeline.add_act(
+        failed_act = sub_pipeline.add_act(
             act_name=_("更新演练任务状态为失败"),
             act_component_code=MySQLBackupRecoverTaskMetaComponent.code,
             kwargs={
                 "task_id": self.root_id,
                 "task_status": "recover_failed",
             },
-            is_remote_rewritable=True,
             extend=False,
         )
 
         # 添加条件网关：根据回档执行结果选择不同分支
-        pipeline.add_conditional_subs(
+        sub_pipeline.add_conditional_subs(
             source_act=check_act,
             conditions=[
                 Conditions(act_object=success_act, express='== "success"'),
@@ -297,7 +298,7 @@ class MySQLRollbackExerciseFlow(object):
         # 回档成功,回收资源
         uninstall_data = copy.deepcopy(self.data)
         uninstall_data["force"] = True
-        pipeline.add_sub_pipeline(
+        sub_pipeline.add_sub_pipeline(
             MySQLSingleDestroyFlow(root_id=self.root_id, data=uninstall_data).destroy_mysql_single_subflow(
                 ip=self.rollback_host["ip"],
                 port=self.rollback_port,
@@ -323,7 +324,7 @@ class MySQLRollbackExerciseFlow(object):
             "operator": "system",
         }
         # 机器归还到资源池
-        pipeline.add_act(
+        sub_pipeline.add_act(
             act_name=_("机器归还到资源池"),
             act_component_code=ExternalServiceComponent.code,
             kwargs={
@@ -333,10 +334,9 @@ class MySQLRollbackExerciseFlow(object):
                 "api_call_func": "resource_import",
                 "success_callback_path": f"{insert_host_event.__module__}.{insert_host_event.__name__}",
             },
-            is_remote_rewritable=True,
         )
         # 转移模块到对应业务的资源池
-        pipeline.add_act(
+        sub_pipeline.add_act(
             act_name=_("主机转移至资源池空闲模块"),
             act_component_code=TransferHostServiceComponent.code,
             kwargs={
@@ -345,10 +345,9 @@ class MySQLRollbackExerciseFlow(object):
                 "bk_host_ids": [self.rollback_host["bk_host_id"]],
                 "update_host_properties": {"dbm_meta": [], "need_monitor": False, "update_operator": False},
             },
-            is_remote_rewritable=True,
         )
         # 清理数据备份目录
-        pipeline.add_act(
+        sub_pipeline.add_act(
             act_name=_("清理数据备份目录"),
             act_component_code=CleanDataBakDirComponent.code,
             kwargs={
@@ -356,24 +355,20 @@ class MySQLRollbackExerciseFlow(object):
                 "bk_cloud_id": self.rollback_host["bk_cloud_id"],
                 "exec_ip": self.rollback_host["ip"],
             },
-            is_remote_rewritable=True,
         )
         # # 解除告警屏蔽
         # pipeline.add_act(
         #     act_name=_("解除告警屏蔽"),
         #     act_component_code=DisableAlarmShieldComponent.code,
         #     kwargs={},
-        #     is_remote_rewritable=True,
         # )
         # 更新任务状态
-        pipeline.add_act(
+        sub_pipeline.add_act(
             act_name=_("更新演练任务状态"),
             act_component_code=MySQLBackupRecoverTaskMetaComponent.code,
             kwargs={
                 "task_id": self.root_id,
                 "task_status": "resource_return_success",
             },
-            is_remote_rewritable=True,
         )
-        # run pipeline
-        pipeline.run_pipeline(init_trans_data_class=SingleApplyManualContext())
+        return sub_pipeline.build_sub_process(sub_name=_("{}回档演练".format(cluster_class.immute_domain)))

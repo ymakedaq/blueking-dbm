@@ -46,6 +46,22 @@ class SingleApplyManualContext:
 
 
 @dataclass()
+class MySQLRollbackExerciseContext:
+    """
+    定义MySQL回档演练的上下文dataclass类
+    """
+
+    rollback_status: str = None
+    time_zone_info: dict = field(default_factory=dict)  # 新机器的时区设置信息
+    system_info: dict = field(default_factory=dict)
+    alarm_shield_id: int = None
+
+    @staticmethod
+    def get_time_zone_var_name() -> str:
+        return "time_zone_info"
+
+
+@dataclass()
 class ClusterInfoContext:
     """
     定义集群信息
