@@ -249,7 +249,7 @@ class MySQLRollbackExerciseFlow(object):
             cluster_model=cluster_class,
             cluster_info=my_cluster,
             backup_info=self.data.get("backup_record", {}),
-            add_rollback_status_act=True,
+            add_mark_status_act=True,
         )
         sub_pipeline.add_sub_pipeline(sub_flow=rollback_sub_flow)
         my_cluster["backupinfo"] = backup_info
