@@ -335,18 +335,18 @@ func (a *ObjectDetail) GetDiskMatchInfo() (message string) {
 	if len(a.StorageSpecs) > 0 {
 		for _, d := range a.StorageSpecs {
 			if cmutil.IsNotEmpty(d.MountPoint) {
-				message += fmt.Sprintf("disk: mount point: %s", d.MountPoint)
+				message += fmt.Sprintf("磁盘挂载点: %s", d.MountPoint)
 			}
 			if !cmutil.IsNotEmpty(d.DiskType) {
-				message += " disk type: " + d.DiskType
+				message += " 磁盘类型: " + d.DiskType
 			}
 			switch {
 			case d.MaxSize > 0 && d.MinSize > 0:
-				message += fmt.Sprintf(" size: %d ~  %d G ", d.MinSize, d.MaxSize)
+				message += fmt.Sprintf(" 磁盘大小: %d ~  %d G ", d.MinSize, d.MaxSize)
 			case d.MaxSize > 0 && d.MaxSize <= 0:
-				message += fmt.Sprintf(" size <= %d G ", d.MaxSize)
+				message += fmt.Sprintf(" 磁盘大小 <= %d G ", d.MaxSize)
 			case d.MaxSize <= 0 && d.MinSize > 0:
-				message += fmt.Sprintf(" size >= %d G ", d.MinSize)
+				message += fmt.Sprintf(" 磁盘大小 >= %d G ", d.MinSize)
 			}
 		}
 		message += "\n"
@@ -356,21 +356,9 @@ func (a *ObjectDetail) GetDiskMatchInfo() (message string) {
 
 // GetMessage return apply failed message
 func (a *ObjectDetail) GetMessage() (message string) {
-	message += fmt.Sprintf(" group: %s\n", a.GroupMark)
-	if len(a.DeviceClass) > 0 {
-		message += fmt.Sprintf("device_class: %v\n", a.DeviceClass)
-	}
-	if a.Spec.NotEmpty() {
-		if a.Spec.Cpu.IsNotEmpty() {
-			message += fmt.Sprintf("cpu: %d ~ %d 核\n", a.Spec.Cpu.Min, a.Spec.Cpu.Max)
-		}
-		if a.Spec.Mem.IsNotEmpty() {
-			message += fmt.Sprintf("mem: %d ~ %d M\n", a.Spec.Mem.Min, a.Spec.Mem.Max)
-		}
-	}
-	message += a.GetDiskMatchInfo()
+	message += fmt.Sprintf("[Group]: %s\n", a.GroupMark)
 	if !a.LocationSpec.IsEmpty() {
-		message += fmt.Sprintf("city: %s \n", a.LocationSpec.City)
+		message += fmt.Sprintf("地域: %s \n", a.LocationSpec.City)
 		if len(a.LocationSpec.SubZoneIds) > 0 {
 			if a.LocationSpec.IsExclude() {
 				message += fmt.Sprintf("subzoneId 必须不能存在这些园区中: %v", translateSubzoneIdToName(a.LocationSpec.SubZoneIds))
@@ -381,9 +369,9 @@ func (a *ObjectDetail) GetMessage() (message string) {
 	}
 	switch a.Affinity {
 	case NONE:
-		message += "资源亲和性： NONE\n"
+		message += "资源亲和性： [NONE] 无需亲和性处理\n"
 	case CROS_SUBZONE:
-		message += "资源亲和性： 同城跨园区\n"
+		message += "资源亲和性： [CROS_SUBZONE] 同城跨园区\n"
 		if a.Tolerance >= 0 {
 			if a.Tolerance == 0 {
 				message += "容忍度： 0 (所有机器必须跨园区)\n"
@@ -395,7 +383,7 @@ func (a *ObjectDetail) GetMessage() (message string) {
 			message += fmt.Sprintf("当前集群已有机器数： %d\n", len(a.CurrentHosts))
 		}
 	case SAME_SUBZONE:
-		message += "资源亲和性： 同城同园区\n"
+		message += "资源亲和性： [SAME_SUBZONE] 同城同园区\n"
 		if a.Tolerance >= 0 {
 			if a.Tolerance == 0 {
 				message += "容忍度： 0 (所有机器必须跨机架)\n"
@@ -407,7 +395,7 @@ func (a *ObjectDetail) GetMessage() (message string) {
 			message += fmt.Sprintf("当前集群已有机器数： %d\n", len(a.CurrentHosts))
 		}
 	case SAME_SUBZONE_CROSS_SWTICH:
-		message += "资源亲和性： 同城同园区 跨交换机跨机架\n"
+		message += "资源亲和性： [SAME_SUBZONE_CROSS_SWTICH] 同城同园区 跨交换机跨机架\n"
 		if a.Tolerance >= 0 {
 			if a.Tolerance == 0 {
 				message += "容忍度： 0 (所有机器必须跨机架)\n"
@@ -419,6 +407,19 @@ func (a *ObjectDetail) GetMessage() (message string) {
 			message += fmt.Sprintf("当前集群已有机器数： %d\n", len(a.CurrentHosts))
 		}
 	}
+	if a.Spec.NotEmpty() {
+		if a.Spec.Cpu.IsNotEmpty() {
+			message += fmt.Sprintf("cpu: %d ~ %d 核\n", a.Spec.Cpu.Min, a.Spec.Cpu.Max)
+		}
+		if a.Spec.Mem.IsNotEmpty() {
+			message += fmt.Sprintf("mem: %d ~ %d M\n", a.Spec.Mem.Min, a.Spec.Mem.Max)
+		}
+	}
+	message += a.GetDiskMatchInfo()
+	if len(a.DeviceClass) > 0 {
+		message += fmt.Sprintf("申请的机型: %v\n", a.DeviceClass)
+	}
+
 	message += fmt.Sprintf("申请总数: %d \n", a.Count)
 	return message
 }
