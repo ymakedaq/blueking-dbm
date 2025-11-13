@@ -756,25 +756,33 @@ func (c *PickerObject) pickerOneByPriorityWithRackTolerance(key string, cross_sw
 
 // pickerOneByPriorityWithoutTolerance 无容忍度限制的机器选择（原有逻辑）
 func (c *PickerObject) pickerOneByPriorityWithoutTolerance(key string, cross_switch bool) bool {
+	logger.Info("pickerOneByPriorityWithoutTolerance 开始选择, key: %s, cross_switch: %v", key, cross_switch)
 	c.ExistSubZone = append(c.ExistSubZone, key)
 	pq, ok := c.PriorityElements[key]
 	if !ok {
-		logger.Error("not exist %s", key)
+		logger.Error("优先级队列不存在, key: %s", key)
 		return false
 	}
+	logger.Info("优先级队列长度: %d, key: %s", pq.Len(), key)
 	for pq.Len() > 0 {
 		item, _ := pq.Pop()
 		v, ok := item.Value.(InstanceObject)
 		if !ok {
-			logger.Warn("Type Assertion failed,hostId:%s", item.Key)
+			logger.Warn("类型断言失败, hostId: %s, key: %s", item.Key, key)
 			continue
 		}
+		logger.Debug("处理主机实例, hostId: %s, rackId: %s, key: %s", v.BkHostId, v.RackId, key)
 		if cross_switch {
-			if !c.CrossRackCheck(v) || !c.CrossSwitchCheck(v) {
+			rackCheck := c.CrossRackCheck(v)
+			switchCheck := c.CrossSwitchCheck(v)
+			if !rackCheck || !switchCheck {
+				logger.Debug("跨机架/跨交换机检查未通过, hostId: %s, rackId: %s, crossRackCheck: %v, crossSwitchCheck: %v",
+					v.BkHostId, v.RackId, rackCheck, switchCheck)
 				continue
 			}
 		}
 		if slices.Contains(c.SatisfiedHostIds, v.BkHostId) {
+			logger.Warn("主机ID已存在于已满足列表中, hostId: %s, key: %s", v.BkHostId, key)
 			return false
 		}
 
@@ -783,8 +791,11 @@ func (c *PickerObject) pickerOneByPriorityWithoutTolerance(key string, cross_swi
 		c.SatisfiedHostIds = append(c.SatisfiedHostIds, v.BkHostId)
 		c.ExistLinkNetdeviceIds = append(c.ExistLinkNetdeviceIds, v.LinkNetdeviceId...)
 		c.PickDistribute[key]++
+		logger.Info("成功选择主机, hostId: %s, rackId: %s, key: %s, 当前已选择主机数: %d",
+			v.BkHostId, v.RackId, key, len(c.SatisfiedHostIds))
 		return true
 	}
+	logger.Warn("优先级队列已遍历完毕但未找到合适的主机, key: %s, PriorityElements长度: %d", key, len(c.PriorityElements))
 	return len(c.PriorityElements) == 0
 }
 
