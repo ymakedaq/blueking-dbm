@@ -545,6 +545,7 @@ func (c *PickerObject) PickerMajorityElectionCrossSubzone() {
 		if len(campKeys) == 0 {
 			return
 		}
+		logger.Info("campKeys: %v", campKeys)
 		subzoneChan := make(chan subZone, len(campKeys))
 		for _, v := range campKeys {
 			subzoneChan <- v
@@ -564,8 +565,8 @@ func (c *PickerObject) PickerMajorityElectionCrossSubzone() {
 			if pq.Len() == 0 {
 				delete(c.PriorityElements, subzone)
 			}
-			logger.Info(fmt.Sprintf("surplus %s,%d", subzone, pq.Len()))
-			logger.Info(fmt.Sprintf("total demand count:%d,当前满足总数有 %s:%d", c.Count, subzone, len(c.SatisfiedHostIds)))
+			logger.Info(fmt.Sprintf("当前园区 %s 剩余资源数量: %d", subzone, pq.Len()))
+			logger.Info(fmt.Sprintf("总申请数量: %d,当前满足总数有 %d", c.Count, len(c.SatisfiedHostIds)))
 			needCrossSwitchCheck := false
 			if len(c.SatisfiedHostIdsMap[subzone]) >= 1 {
 				needCrossSwitchCheck = true
