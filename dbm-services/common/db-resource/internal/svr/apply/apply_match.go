@@ -558,11 +558,12 @@ func (c *PickerObject) PickerMajorityElectionCrossSubzone() {
 			}
 			pq, ok := c.PriorityElements[subzone]
 			if !ok {
-				logger.Warn("%s is queue is nil", subzone)
+				logger.Warn("园区 %s 的优先级队列为空，从候选移除", subzone)
 				delete(c.PriorityElements, subzone)
 				continue
 			}
 			if pq.Len() == 0 {
+				logger.Info("园区 %s 没有剩余资源，从候选移除", subzone)
 				delete(c.PriorityElements, subzone)
 			}
 			logger.Info(fmt.Sprintf("当前园区 %s 剩余资源数量: %d", subzone, pq.Len()))
@@ -573,6 +574,7 @@ func (c *PickerObject) PickerMajorityElectionCrossSubzone() {
 			}
 			if c.pickerOneByPriority(subzone, needCrossSwitchCheck) {
 				if len(c.SatisfiedHostIdsMap[subzone]) >= subZoneMaxCount {
+					logger.Info("园区 %s 已达到最大容忍度限制，从候选移除", subzone)
 					delete(c.PriorityElements, subzone)
 				}
 			}
