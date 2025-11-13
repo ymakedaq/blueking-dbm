@@ -768,21 +768,21 @@ func (c *PickerObject) pickerOneByPriorityWithoutTolerance(key string, cross_swi
 		item, _ := pq.Pop()
 		v, ok := item.Value.(InstanceObject)
 		if !ok {
-			logger.Warn("类型断言失败, hostId: %s, key: %s", item.Key, key)
+			logger.Warn("类型断言失败, hostId: %d, key: %s", item.Key, key)
 			continue
 		}
-		logger.Debug("处理主机实例, hostId: %s, rackId: %s, key: %s", v.BkHostId, v.RackId, key)
+		logger.Info("处理主机实例, hostId: %d, rackId: %s, key: %s", v.BkHostId, v.RackId, key)
 		if cross_switch {
 			rackCheck := c.CrossRackCheck(v)
 			switchCheck := c.CrossSwitchCheck(v)
 			if !rackCheck || !switchCheck {
-				logger.Debug("跨机架/跨交换机检查未通过, hostId: %s, rackId: %s, crossRackCheck: %v, crossSwitchCheck: %v",
+				logger.Info("跨机架/跨交换机检查未通过, hostId: %d, rackId: %s, crossRackCheck: %v, crossSwitchCheck: %v",
 					v.BkHostId, v.RackId, rackCheck, switchCheck)
 				continue
 			}
 		}
 		if slices.Contains(c.SatisfiedHostIds, v.BkHostId) {
-			logger.Warn("主机ID已存在于已满足列表中, hostId: %s, key: %s", v.BkHostId, key)
+			logger.Warn("主机ID已存在于已满足列表中, hostId: %d, key: %s", v.BkHostId, key)
 			return false
 		}
 
@@ -791,7 +791,7 @@ func (c *PickerObject) pickerOneByPriorityWithoutTolerance(key string, cross_swi
 		c.SatisfiedHostIds = append(c.SatisfiedHostIds, v.BkHostId)
 		c.ExistLinkNetdeviceIds = append(c.ExistLinkNetdeviceIds, v.LinkNetdeviceId...)
 		c.PickDistribute[key]++
-		logger.Info("成功选择主机, hostId: %s, rackId: %s, key: %s, 当前已选择主机数: %d",
+		logger.Info("成功选择主机, hostId: %d, rackId: %s, key: %s, 当前已选择主机数: %d",
 			v.BkHostId, v.RackId, key, len(c.SatisfiedHostIds))
 		return true
 	}
