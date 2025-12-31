@@ -658,7 +658,13 @@ class ResourceHandler(object):
         flush_time = "09:00:00"
         update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        return {"update_time": update_time, "water_level": water_level, "flush_time": flush_time}
+        return {
+            "update_time": update_time,
+            "water_level": water_level,
+            "flush_time": flush_time,
+            "exclusive_spec": exclusive_spec,
+            "exclusive_machine": exclusive_machine,
+        }
 
     @classmethod
     def get_evnet_info(cls, bk_host_ids, remark, host_id_ip_map):
@@ -676,11 +682,7 @@ class ResourceHandler(object):
                 after_value = (
                     remark_info[label_key]["after_value"] if remark_info[label_key].get("after_value") else _("无")
                 )
-                if before_value == after_value:
-                    continue
                 remark_list.append(f"{RESOURCE_UPDATE_REMARK[label_key]}: {before_value}→{after_value}")
-            if not remark_list:
-                continue
             new_remark = ";".join(remark_list)
             remark_map[host_id] = new_remark
             hosts.append({"ip": host_id_ip_map[str(host_id)], "bk_host_id": host_id})
