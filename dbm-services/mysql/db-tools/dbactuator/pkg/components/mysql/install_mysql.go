@@ -47,7 +47,7 @@ type InstallMySQLComp struct {
 	installMySQLConfig `json:"-"`
 	RollBackContext    rollback.RollBackObjects `json:"-"`
 	TimeZone           string
-
+	TableOpenCache     int `json:"-"`
 	// 执行这个 comp 时用的 mysql 帐号
 	// 初始化安装的时候是 root, ""
 	// 其他情况下用管理员帐号
@@ -77,6 +77,7 @@ type InstallMySQLParams struct {
 	SpiderAutoIncrModeMap    json.RawMessage   `json:"spider_auto_incr_mode_map"`
 	AllowDiskFileSystemTypes []string
 	Engine                   string `json:"engine"`
+	IsSpider                 bool   `json:"is_spider"`
 }
 
 // InitDirs init dirs
@@ -124,6 +125,7 @@ type Mysqld struct {
 	ServerId                     uint64                  `json:"server_id"`
 	InnodbBufferPoolSize         string                  `json:"innodb_buffer_pool_size"`
 	SpiderAutoIncrementModeValue SpiderAutoIncrModeValue `json:"spider_auto_increment_mode_value"`
+	TableOpenCache               int                     `json:"table_open_cache"`
 	// rocksdb
 	RocksdbBlockCacheSize string `json:"rocksdb_block_cache_size"`
 	// tokudb
@@ -449,6 +451,14 @@ func (i *InstallMySQLComp) initMySQLInstanceMem() (err error) {
 		return fmt.Errorf("获取实例内存失败, err: %w", err)
 	}
 	i.Params.InstMem = instMem
+	switch {
+	case instMem <= 2048:
+		i.TableOpenCache = 512
+	case instMem <= 4096:
+		i.TableOpenCache = 1024
+	default:
+		i.TableOpenCache = 2048
+	}
 	return nil
 }
 
