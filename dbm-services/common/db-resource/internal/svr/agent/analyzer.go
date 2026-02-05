@@ -20,6 +20,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"dbm-services/common/db-resource/internal/config"
 	"dbm-services/common/db-resource/internal/svr/apply"
 	"dbm-services/common/go-pubpkg/logger"
 )
@@ -110,9 +111,10 @@ type VerificationInfo struct {
 
 // ResourceAnalyzer 资源分析器
 type ResourceAnalyzer struct {
-	executor *AgentExecutor
-	enabled  bool
-	mu       sync.RWMutex
+	executor  *AgentExecutor
+	enabled   bool
+	llmConfig *config.LLMConfig
+	mu        sync.RWMutex
 }
 
 var (
@@ -121,7 +123,7 @@ var (
 )
 
 // InitAnalyzer 初始化全局分析器
-func InitAnalyzer(db *gorm.DB, cfg *LLMConfig) error {
+func InitAnalyzer(db *gorm.DB, cfg *config.LLMConfig) error {
 	if cfg == nil || !cfg.Enabled {
 		logger.Info("[Analyzer] LLM analysis is disabled")
 		return nil
@@ -129,8 +131,23 @@ func InitAnalyzer(db *gorm.DB, cfg *LLMConfig) error {
 
 	var initErr error
 	analyzerOnce.Do(func() {
+		// 转换 config.OpenAIConfig 到 agent.OpenAIConfig
+		agentOpenAIConfig := OpenAIConfig{
+			APIKey:      cfg.OpenAI.APIKey,
+			BaseURL:     cfg.OpenAI.BaseURL,
+			Model:       cfg.OpenAI.Model,
+			MaxTokens:   cfg.OpenAI.MaxTokens,
+			Temperature: cfg.OpenAI.Temperature,
+		}
+		
+		// 转换 config.AgentConfig 到 agent.AgentConfig
+		agentConfig := AgentConfig{
+			MaxIterations:  cfg.Agent.MaxIterations,
+			TimeoutSeconds: cfg.Agent.TimeoutSeconds,
+		}
+		
 		// 创建 LLM Provider
-		provider, err := CreateProvider(cfg.Provider, cfg.OpenAI, cfg.Azure)
+		provider, err := CreateProvider(cfg.Provider, agentOpenAIConfig, AzureOpenAIConfig{})
 		if err != nil {
 			initErr = fmt.Errorf("failed to create LLM provider: %v", err)
 			return
@@ -140,11 +157,12 @@ func InitAnalyzer(db *gorm.DB, cfg *LLMConfig) error {
 		tools := NewResourceTools(db)
 
 		// 创建执行器
-		executor := NewAgentExecutor(provider, tools, cfg.Agent)
+		executor := NewAgentExecutor(provider, tools, agentConfig)
 
 		globalAnalyzer = &ResourceAnalyzer{
-			executor: executor,
-			enabled:  true,
+			executor:  executor,
+			enabled:   true,
+			llmConfig: cfg,
 		}
 
 		logger.Info("[Analyzer] LLM analyzer initialized with provider: %s", provider.Name())
@@ -588,3 +606,76 @@ func formatAnalysisResult(result *AnalysisResult) {
 		result.Suggestions[i].Description = FormatSubZoneIDsInText(result.Suggestions[i].Description)
 	}
 }
+
+// AnalyzeWithValidation 执行带验证的分析
+func (a *ResourceAnalyzer) AnalyzeWithValidation(ctx context.Context, applyParams *apply.RequestInputParam, validatorConfig config.ValidatorConfig) (*AnalysisResult, *ValidationReport, error) {
+	if !a.IsEnabled() {
+		return nil, nil, fmt.Errorf("LLM analyzer is not enabled")
+	}
+
+	startTime := time.Now()
+
+	// 构建消息
+	systemPrompt := GetSystemPrompt()
+	userMessage := BuildUserMessage(applyParams)
+
+	// 执行带验证的 Agent
+	execResult, validationReport, err := a.executor.ExecuteWithValidation(ctx, systemPrompt, userMessage, validatorConfig, a.llmConfig)
+	if err != nil {
+		logger.Error("[Analyzer] Agent execution with validation failed: %v", err)
+		return nil, validationReport, err
+	}
+
+	// 解析结果
+	result := &AnalysisResult{
+		Duration:    time.Since(startTime).String(),
+		RawResponse: execResult.FinalResponse,
+	}
+
+	// 尝试解析 JSON 响应
+	if err := a.parseResponse(execResult.FinalResponse, result); err != nil {
+		logger.Warn("[Analyzer] Failed to parse JSON response, using raw response: %v", err)
+		result.Summary = execResult.FinalResponse
+	}
+
+	logger.Info("[Analyzer] Analysis with validation completed in %s, iterations: %d, tool calls: %d, validation score: %d",
+		result.Duration, execResult.Iterations, len(execResult.ToolCalls), validationReport.ConfidenceScore)
+
+	// 后处理：将园区 ID 转换为友好的显示格式
+	formatAnalysisResult(result)
+
+	// 如果 LLM 没有返回 Markdown 格式，使用备用格式化函数生成
+	if result.MarkdownText == "" {
+		logger.Info("[Analyzer] No Markdown from LLM, generating from JSON data")
+		result.MarkdownText = FormatAnalysisResultToMarkdown(result)
+	}
+
+	// 在 Markdown 结果末尾添加验证信息
+	if validationReport != nil {
+		result.MarkdownText += fmt.Sprintf("\n\n---\n\n## 🔍 验证信息\n\n")
+		result.MarkdownText += fmt.Sprintf("- **置信度评分**: %d/100\n", validationReport.ConfidenceScore)
+		if validationReport.Passed {
+			result.MarkdownText += "- **验证状态**: ✅ 通过\n"
+		} else {
+			result.MarkdownText += "- **验证状态**: ⚠️ 存在问题\n"
+			if len(validationReport.Issues) > 0 {
+				result.MarkdownText += "\n**发现的问题**:\n"
+				for _, issue := range validationReport.Issues {
+					severityIcon := "⚪"
+					switch issue.Severity {
+					case "high":
+						severityIcon = "🔴"
+					case "medium":
+						severityIcon = "🟡"
+					case "low":
+						severityIcon = "⚪"
+					}
+					result.MarkdownText += fmt.Sprintf("- %s %s\n", severityIcon, issue.Description)
+				}
+			}
+		}
+	}
+
+	return result, validationReport, nil
+}
+

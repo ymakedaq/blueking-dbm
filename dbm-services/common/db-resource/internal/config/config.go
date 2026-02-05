@@ -73,8 +73,18 @@ type OpenAIConfig struct {
 
 // AgentConfig Agent 配置
 type AgentConfig struct {
-	MaxIterations  int `yaml:"max_iterations" mapstructure:"max_iterations"`
-	TimeoutSeconds int `yaml:"timeout_seconds" mapstructure:"timeout_seconds"`
+	MaxIterations  int             `yaml:"max_iterations" mapstructure:"max_iterations"`
+	TimeoutSeconds int             `yaml:"timeout_seconds" mapstructure:"timeout_seconds"`
+	Validator      ValidatorConfig `yaml:"validator" mapstructure:"validator"`
+}
+
+// ValidatorConfig 验证器配置
+type ValidatorConfig struct {
+	Enabled            bool   `yaml:"enabled" mapstructure:"enabled"`
+	MaxRefinements     int    `yaml:"max_refinements" mapstructure:"max_refinements"`           // 最大改进次数
+	MinConfidenceScore int    `yaml:"min_confidence_score" mapstructure:"min_confidence_score"` // 最低置信度要求
+	UseCustomModel     bool   `yaml:"use_custom_model" mapstructure:"use_custom_model"`         // 是否使用自定义模型
+	Model              string `yaml:"model" mapstructure:"model"`                               // 验证器使用的模型名称（简化配置，使用主配置的提供商和参数）
 }
 
 // Db config

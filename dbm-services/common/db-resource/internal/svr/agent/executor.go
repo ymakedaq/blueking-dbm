@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"dbm-services/common/db-resource/internal/config"
 	"dbm-services/common/db-resource/internal/model"
 	"dbm-services/common/db-resource/internal/svr/apply"
 	"dbm-services/common/go-pubpkg/logger"
@@ -854,4 +855,291 @@ Markdown 格式示例：
 `
 
 	return basePrompt
+}
+
+// ExecuteWithValidation 执行带验证的分析（迭代验证模式）
+func (e *AgentExecutor) ExecuteWithValidation(ctx context.Context, systemPrompt, userMessage string, validatorConfig config.ValidatorConfig, llmConfig *config.LLMConfig) (*ExecutionResult, *ValidationReport, error) {
+	startTime := time.Now()
+
+	// 如果验证器未启用，直接执行普通分析
+	if !validatorConfig.Enabled {
+		result, err := e.Execute(ctx, systemPrompt, userMessage)
+		return result, nil, err
+	}
+
+	// 设置超时
+	ctx, cancel := context.WithTimeout(ctx, e.timeout)
+	defer cancel()
+
+	// 创建验证器
+	validator := NewResourceAnalysisValidator(validatorConfig)
+
+	// 如果配置使用自定义模型，创建独立的 LLM Provider 用于验证
+	var validationProvider LLMProvider
+	if validatorConfig.UseCustomModel && validatorConfig.Model != "" {
+		logger.Info("[Executor] Creating custom LLM provider for validation with model: %s", validatorConfig.Model)
+
+		// 使用主配置的提供商和参数，但替换模型名称
+		// 从 llmConfig 中获取主配置
+		if llmConfig != nil {
+			// 转换并创建验证专用的配置
+			agentOpenAIConfig := OpenAIConfig{
+				APIKey:      llmConfig.OpenAI.APIKey,
+				BaseURL:     llmConfig.OpenAI.BaseURL,
+				Model:       validatorConfig.Model, // 使用验证器指定的模型
+				MaxTokens:   llmConfig.OpenAI.MaxTokens,
+				Temperature: llmConfig.OpenAI.Temperature,
+			}
+
+			provider, err := CreateProvider(llmConfig.Provider, agentOpenAIConfig, AzureOpenAIConfig{})
+			if err != nil {
+				logger.Warn("[Executor] Failed to create custom validation provider, using main provider: %v", err)
+				validationProvider = e.provider
+			} else {
+				validationProvider = provider
+				logger.Info("[Executor] Custom validation provider created successfully with model: %s", validatorConfig.Model)
+			}
+		} else {
+			logger.Warn("[Executor] LLM config not provided, using main provider")
+			validationProvider = e.provider
+		}
+	} else {
+		// 使用主 Agent 的 provider
+		validationProvider = e.provider
+		logger.Info("[Executor] Using main LLM provider for validation: %s", e.provider.Name())
+	}
+
+	// 未来可能使用 validationProvider 来生成验证反馈，目前保留
+	_ = validationProvider
+
+	var finalResult *ExecutionResult
+	var finalReport *ValidationReport
+	var lastErr error
+
+	maxRefinements := validatorConfig.MaxRefinements
+	if maxRefinements <= 0 {
+		maxRefinements = 2
+	}
+
+	// 迭代验证流程
+	for refinement := 0; refinement <= maxRefinements; refinement++ {
+		logger.Info("[Executor] Starting refinement iteration %d/%d", refinement, maxRefinements)
+
+		// 执行主 Agent 分析
+		result, err := e.Execute(ctx, systemPrompt, userMessage)
+		if err != nil {
+			lastErr = err
+			logger.Error("[Executor] Agent execution failed in refinement %d: %v", refinement, err)
+			break
+		}
+
+		finalResult = result
+
+		// 解析分析结果
+		analysisResult := &AnalysisResult{
+			Duration:    time.Since(startTime).String(),
+			RawResponse: result.FinalResponse,
+		}
+
+		// 尝试解析 JSON 响应
+		if err := parseAnalysisResponse(result.FinalResponse, analysisResult); err != nil {
+			logger.Warn("[Executor] Failed to parse analysis result for validation: %v", err)
+			// 如果无法解析，返回不完整的验证报告
+			finalReport = &ValidationReport{
+				Passed:          false,
+				ConfidenceScore: 0,
+				Issues: []ValidationIssue{
+					{
+						Category:    "parse_error",
+						Severity:    "high",
+						Description: fmt.Sprintf("无法解析分析结果: %v", err),
+						Field:       "result",
+					},
+				},
+			}
+			break
+		}
+
+		// 验证分析结果
+		report := validator.ValidateAnalysisResult(analysisResult)
+		finalReport = report
+
+		logger.Info("[Executor] Validation result: passed=%v, score=%d, issues=%d",
+			report.Passed, report.ConfidenceScore, len(report.Issues))
+
+		// 如果验证通过，直接返回
+		if report.Passed {
+			logger.Info("[Executor] Validation passed after %d refinements", refinement)
+			break
+		}
+
+		// 如果这是最后一次尝试，退出循环
+		if refinement >= maxRefinements {
+			logger.Warn("[Executor] Max refinements reached, returning with validation issues")
+			break
+		}
+
+		// 使用验证专用的 LLM 生成改进建议（可选）
+		// 这里可以调用 validationProvider 来生成更详细的改进建议
+		// 但为了简化，我们直接使用验证报告中的建议
+
+		// 构建反馈消息，让主 Agent 根据验证问题改进
+		feedbackMessage := buildValidationFeedback(report)
+		logger.Info("[Executor] Sending validation feedback to agent for refinement")
+
+		// 将反馈作为新的用户消息，继续下一轮分析
+		userMessage = fmt.Sprintf("%s\n\n## 验证反馈\n\n上一次分析存在以下问题，请改进：\n\n%s",
+			userMessage, feedbackMessage)
+	}
+
+	// 设置最终结果的耗时
+	if finalResult != nil {
+		finalResult.Duration = time.Since(startTime)
+	}
+
+	return finalResult, finalReport, lastErr
+}
+
+// GetValidationSystemPrompt 获取验证系统提示词
+func GetValidationSystemPrompt() string {
+	return `你是资源分析结果的验证助手。你的任务是检查分析结果的逻辑一致性和合理性。
+
+## 验证规则
+
+1. **原因-建议匹配**：
+   - 磁盘问题（disk）→ adjust_disk
+   - 标签问题（label）→ add_labels
+   - 资源类型问题（rstype）→ change_rstype
+   - 规格问题（spec）→ adjust_spec 或 add_resources
+   - 位置问题（location）→ add_resources
+   - 亲和性问题（affinity）→ add_resources
+
+2. **数量逻辑**：
+   - 申请数 N，可用数 M，建议补充至少 (N-M) 台
+   - 预测数量不能小于申请数量
+   - add_resources 建议的 predicted_count 应该 >= 申请数量
+
+3. **禁止建议**（绝对不能出现）：
+   - ❌ 不能建议降低申请数量（reduce_count, reduce_request, lower_quantity）
+   - ❌ 不能建议放宽亲和性（relax_affinity）
+   - ❌ 不能建议分批申请（split_request）
+   - ❌ 不能建议更换地域（change_location）
+
+4. **优先级合理性**：
+   - 高影响因素（impact: high）的建议应该是优先级 1 或 2
+   - 优先级范围应该在 1-5 之间
+
+5. **完整性检查**：
+   - 必须有摘要（summary）
+   - 必须有失败原因（reasons）
+   - 必须有改进建议（suggestions）
+   - 每个原因和建议都应该有描述
+
+## 验证输出格式
+
+返回 JSON 格式的验证报告：
+{
+  "passed": true/false,
+  "confidence_score": 0-100,
+  "issues": [
+    {
+      "category": "reason_mismatch/quantity_logic/priority_error/forbidden/completeness",
+      "severity": "high/medium/low",
+      "description": "问题描述",
+      "field": "具体字段"
+    }
+  ],
+  "suggestions": ["改进建议1", "改进建议2"]
+}
+
+## 评分标准
+
+- 初始分数：100 分
+- 高严重性问题：-20 分
+- 中等严重性问题：-10 分
+- 低严重性问题：-5 分
+- 最低分数：0 分
+
+## 通过标准
+
+- 置信度评分 >= 配置的最低要求（通常 70 分）
+- 无高严重性问题
+
+## 重要提示
+
+- 严格检查禁止建议类型和关键词
+- 原因类别和建议类型必须匹配
+- 数量逻辑必须合理
+- 使用中文回复
+`
+}
+
+// buildValidationFeedback 构建验证反馈消息
+func buildValidationFeedback(report *ValidationReport) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("置信度评分: %d/100\n\n", report.ConfidenceScore))
+
+	if len(report.Issues) > 0 {
+		sb.WriteString("发现的问题：\n\n")
+		for idx, issue := range report.Issues {
+			sb.WriteString(fmt.Sprintf("%d. [%s] %s\n", idx+1, issue.Severity, issue.Description))
+			if issue.Field != "" {
+				sb.WriteString(fmt.Sprintf("   字段: %s\n", issue.Field))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(report.Suggestions) > 0 {
+		sb.WriteString("改进建议：\n\n")
+		for idx, suggestion := range report.Suggestions {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", idx+1, suggestion))
+		}
+	}
+
+	return sb.String()
+}
+
+// parseAnalysisResponse 解析分析响应（辅助函数）
+func parseAnalysisResponse(response string, result *AnalysisResult) error {
+	// 检查是否包含 Markdown 分隔符
+	markdownSeparator := "---MARKDOWN---"
+	markdownStartIdx := strings.Index(response, markdownSeparator)
+
+	var jsonPart string
+	if markdownStartIdx != -1 {
+		// 提取 JSON 部分（分隔符之前）
+		jsonPart = response[:markdownStartIdx]
+		// 提取 Markdown 部分（分隔符之后）
+		markdownPart := strings.TrimSpace(response[markdownStartIdx+len(markdownSeparator):])
+		result.MarkdownText = markdownPart
+	} else {
+		// 没有分隔符，整个响应都是 JSON
+		jsonPart = response
+	}
+
+	// 尝试从响应中提取 JSON
+	jsonStr := extractJSON(jsonPart)
+	if jsonStr == "" {
+		return fmt.Errorf("no JSON found in response")
+	}
+
+	var parsed struct {
+		Summary      string            `json:"summary"`
+		Reasons      []FailureReason   `json:"reasons"`
+		Suggestions  []Suggestion      `json:"suggestions"`
+		Verification *VerificationInfo `json:"verification"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		return err
+	}
+
+	result.Summary = parsed.Summary
+	result.Reasons = parsed.Reasons
+	result.Suggestions = FilterSuggestions(parsed.Suggestions)
+	result.Verification = parsed.Verification
+
+	return nil
 }

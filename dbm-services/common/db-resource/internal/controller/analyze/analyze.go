@@ -15,6 +15,7 @@ import (
 	"context"
 	"time"
 
+	"dbm-services/common/db-resource/internal/config"
 	"dbm-services/common/db-resource/internal/controller"
 	"dbm-services/common/db-resource/internal/model"
 	"dbm-services/common/db-resource/internal/svr/agent"
@@ -73,7 +74,20 @@ func (c *AnalyzeHandler) AnalyzeResource(r *gin.Context) {
 	ctx, cancel := context.WithTimeout(r.Request.Context(), 60*time.Second)
 	defer cancel()
 
-	result, err := analyzer.Analyze(ctx, param.ApplyParams)
+	// 获取验证器配置
+	validatorConfig := config.AppConfig.LLM.Agent.Validator
+
+	var result *agent.AnalysisResult
+	var validationReport *agent.ValidationReport
+	var err error
+
+	// 如果验证器启用，使用带验证的分析
+	if validatorConfig.Enabled {
+		result, validationReport, err = analyzer.AnalyzeWithValidation(ctx, param.ApplyParams, validatorConfig)
+	} else {
+		result, err = analyzer.Analyze(ctx, param.ApplyParams)
+	}
+
 	if err != nil {
 		logger.Error("LLM analyze failed: %v", err)
 		c.SendResponse(r, nil, map[string]interface{}{
@@ -83,7 +97,26 @@ func (c *AnalyzeHandler) AnalyzeResource(r *gin.Context) {
 		return
 	}
 
-	c.SendResponse(r, nil, result)
+	// 构建响应，包含验证信息
+	response := map[string]interface{}{
+		"summary":      result.Summary,
+		"reasons":      result.Reasons,
+		"suggestions":  result.Suggestions,
+		"verification": result.Verification,
+		"duration":     result.Duration,
+		"markdown_text": result.MarkdownText,
+	}
+
+	// 如果有验证报告，添加到响应中
+	if validationReport != nil {
+		response["validation"] = map[string]interface{}{
+			"passed":           validationReport.Passed,
+			"confidence_score": validationReport.ConfidenceScore,
+			"issues_count":     len(validationReport.Issues),
+		}
+	}
+
+	c.SendResponse(r, nil, response)
 }
 
 // QuickAnalyzeParam 快速分析参数

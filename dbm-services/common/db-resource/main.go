@@ -125,29 +125,14 @@ func init() {
 
 // initLLMAnalyzer 初始化 LLM 分析器
 func initLLMAnalyzer() {
-	llmCfg := config.AppConfig.LLM
+	llmCfg := &config.AppConfig.LLM
 	if !llmCfg.Enabled {
 		logger.Info("LLM analyzer is disabled")
 		return
 	}
 
-	agentCfg := &agent.LLMConfig{
-		Enabled:  llmCfg.Enabled,
-		Provider: llmCfg.Provider,
-		OpenAI: agent.OpenAIConfig{
-			APIKey:      llmCfg.OpenAI.APIKey,
-			BaseURL:     llmCfg.OpenAI.BaseURL,
-			Model:       llmCfg.OpenAI.Model,
-			MaxTokens:   llmCfg.OpenAI.MaxTokens,
-			Temperature: llmCfg.OpenAI.Temperature,
-		},
-		Agent: agent.AgentConfig{
-			MaxIterations:  llmCfg.Agent.MaxIterations,
-			TimeoutSeconds: llmCfg.Agent.TimeoutSeconds,
-		},
-	}
-
-	if err := agent.InitAnalyzer(model.DB.Self, agentCfg); err != nil {
+	// 直接传递 config 包中的 LLM 配置
+	if err := agent.InitAnalyzer(model.DB.Self, llmCfg); err != nil {
 		logger.Error("Failed to initialize LLM analyzer: %v", err)
 	}
 
