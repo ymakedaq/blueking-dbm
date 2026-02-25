@@ -600,6 +600,10 @@ class CheckFaultHostsSerializer(serializers.Serializer):
     hosts = serializers.ListField(help_text=_("主机信息"), child=CheckHostSerializer())
 
 
+class CheckDissolveHostsSerializer(serializers.Serializer):
+    bk_host_ids = serializers.ListField(help_text=_("主机ID列表"), child=serializers.IntegerField())
+
+
 class CalcResourceWaterLevelSerializer(serializers.Serializer):
     cache = serializers.BooleanField(help_text=_("是否获取缓存"), required=True)
 

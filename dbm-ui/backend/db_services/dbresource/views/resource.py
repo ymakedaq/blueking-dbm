@@ -35,6 +35,7 @@ from backend.db_services.dbresource.handlers import ResourceHandler
 from backend.db_services.dbresource.serializers import (  # CheckFaultHostsSerializer,
     AppendHostLabelSerializer,
     CalcResourceWaterLevelSerializer,
+    CheckDissolveHostsSerializer,
     CheckFaultHostsSerializer,
     GetDiskTypeResponseSerializer,
     GetMountPointResponseSerializer,
@@ -97,6 +98,7 @@ class DBResourceViewSet(viewsets.SystemViewSet):
             "resource_import_urls",
             "get_os_types",
             "check_fault_hosts",
+            "check_dissolve_hosts",
         ): [],
     }
     default_permission_class = [ResourceActionPermission([ActionEnum.RESOURCE_MANAGE])]
@@ -496,6 +498,17 @@ class DBResourceViewSet(viewsets.SystemViewSet):
             for bk_host_id in host_ip__id_map.values()
         }
         return Response(fault_host_infos)
+
+    @common_swagger_auto_schema(
+        operation_summary=_("查询主机是否为待裁撤阶段"),
+        request_body=CheckDissolveHostsSerializer(),
+        tags=[SWAGGER_TAG],
+    )
+    @action(detail=False, methods=["POST"], serializer_class=CheckDissolveHostsSerializer)
+    def check_dissolve_hosts(self, request):
+        data = self.params_validate(self.get_serializer_class())
+        dissolved_host_ids = HCMApi.check_host_is_dissolved(data["bk_host_ids"])
+        return Response({"dissolved_host_ids": dissolved_host_ids})
 
     @common_swagger_auto_schema(
         operation_summary=_("追加主机标签"),

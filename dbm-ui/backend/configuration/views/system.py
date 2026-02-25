@@ -125,6 +125,9 @@ class SystemSettingsViewSet(viewsets.SystemViewSet):
             "ENABLE_EXTERNAL_PROXY": env.ENABLE_EXTERNAL_PROXY,
             "DBA_ROBOT": SystemSettings.get_setting_value(key=SystemSettingsEnum.DBA_ROBOT.value, default={}),
             "ENABLE_DBM_AI": env.ENABLE_DBM_AI,
+            "HOST_DISSOLVED_SWITCH": SystemSettings.get_setting_value(
+                key=SystemSettingsEnum.HOST_DISSOLVED_SWITCH.value, default=False
+            ),
         }
         # 非外部环境，补充额外环境变量
         if not env.ENABLE_EXTERNAL_PROXY and not env.ENABLE_OPEN_EXTERNAL_PROXY:

@@ -30,7 +30,8 @@ type DbmEnvData struct {
 		SetId            int `json:"set_id"`
 		ResourceModuleId int `json:"resource.idle.module"`
 	} `json:"CC_MANAGE_TOPO"`
-	RESOURCE_INDEPENDENT_BIZ int `json:"RESOURCE_INDEPENDENT_BIZ"`
+	RESOURCE_INDEPENDENT_BIZ int  `json:"RESOURCE_INDEPENDENT_BIZ"`
+	HOST_DISSOLVED_SWITCH    bool `json:"HOST_DISSOLVED_SWITCH"`
 }
 
 // GetDbmEnv get dbm env
