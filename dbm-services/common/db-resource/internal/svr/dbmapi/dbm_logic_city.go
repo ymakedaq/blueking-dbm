@@ -41,6 +41,7 @@ type IdcCitiesResp struct {
 
 // GetIdcCityByLogicCity 根据逻辑城市获取实际对应城市列表
 func GetIdcCityByLogicCity(logicCity string) (idcCites []string, err error) {
+	logger.Info("get idc cities from logic city %s", logicCity)
 	if idcCacheCites, ok := cityCache.Get(logicCity); ok {
 		idcCites, ok = idcCacheCites.([]string)
 		if ok && len(idcCites) > 0 {
@@ -52,6 +53,7 @@ func GetIdcCityByLogicCity(logicCity string) (idcCites []string, err error) {
 	cli := NewDbmClient()
 	u, err := url.JoinPath(cli.EndPoint, DBMLogicCityApi)
 	if err != nil {
+		logger.Error("join path failed %s", err.Error())
 		return nil, err
 	}
 	p := GetIdcCityByLogicCityParam{
@@ -64,6 +66,7 @@ func GetIdcCityByLogicCity(logicCity string) (idcCites []string, err error) {
 	}
 	request, err := http.NewRequest(http.MethodPost, u, bytes.NewBuffer(body))
 	if err != nil {
+		logger.Error("new request failed %s", err.Error())
 		return nil, err
 	}
 	request.Header.Add("content-type", "application/json;charset=utf-8")
@@ -71,6 +74,7 @@ func GetIdcCityByLogicCity(logicCity string) (idcCites []string, err error) {
 
 	f := func() (content []byte, err error) {
 		resp, err := cli.Client.Do(request)
+		logger.Info("get idc cities from logic city %s, resp: %v", logicCity, resp)
 		if err != nil {
 			return nil, err
 		}
