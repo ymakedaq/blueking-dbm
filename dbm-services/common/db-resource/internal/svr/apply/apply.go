@@ -260,6 +260,7 @@ func cycleApplySequential(param RequestInputParam) (pickers []*PickerObject, err
 		if v.Affinity == "" {
 			v.Affinity = NONE
 		}
+		logger.Info("=======================================================> group mark %s", v.GroupMark)
 		idcCites := []string{}
 		if lo.IsNotEmpty(&v.LocationSpec.City) {
 			idcCites, err = getLogicIdcCitys(v)
