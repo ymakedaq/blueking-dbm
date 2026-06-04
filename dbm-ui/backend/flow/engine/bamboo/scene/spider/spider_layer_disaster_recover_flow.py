@@ -644,6 +644,7 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
                     root_id=self.root_id,
                     parent_global_data=cluster_ticket,
                     spider_role=TenDBClusterSpiderRole.SPIDER_MASTER.value,
+                    is_disaster_recover=True,
                 )
             )
         if recover_slave:
@@ -654,6 +655,7 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
                     root_id=self.root_id,
                     parent_global_data=cluster_ticket,
                     spider_role=TenDBClusterSpiderRole.SPIDER_SLAVE.value,
+                    is_disaster_recover=True,
                 )
             )
 
@@ -759,7 +761,6 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
         pipeline = Builder(
             root_id=self.root_id,
             data=self.data,
-            need_random_pass_cluster_ids=list({int(i["cluster_id"]) for i in self.data["infos"]}),
         )
         sub_list = [self._cluster_sub_flow(info) for info in self.data["infos"]]
         pipeline.add_parallel_sub_pipeline(sub_flow_list=sub_list)
