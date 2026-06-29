@@ -42,8 +42,9 @@ type ImportSchemaFromLocalSpiderParam struct {
 	SpiderPort  int    `json:"spider_port"  validate:"required,lt=65536,gte=3306"` // spider节点端口
 	UseMydumper bool   `json:"use_mydumper"`                                       // use mydumper
 	Stream      bool   `json:"stream"`                                             // mydumper stream myloader stream
-	DropBefore  bool   `json:"drop_before"`                                        // 强制覆盖原来的表结构
-	Threads     int    `json:"threads"`                                            // 可配置最大并发 for mydumper myloader
+	DropBefore                    bool `json:"drop_before"`                       // 强制覆盖原来的表结构
+	RewriteCreateTableIfNotExists bool `json:"rewrite_create_table_if_not_exists"` // 将 CREATE TABLE 改写为 CREATE TABLE IF NOT EXISTS
+	Threads                       int  `json:"threads"`                           // 可配置最大并发 for mydumper myloader
 	TdbctlUser  string `json:"tdbctl_user" validate:"required"`
 	TdbctlPass  string `json:"tdbctl_pass" validate:"required"`
 }
@@ -54,8 +55,9 @@ type importSchemaFromLocalSpiderRuntime struct {
 	tdbctlConns     []*native.DbWorker
 	charset         string
 	dumpDbs         []string
-	tmpDumpDir      string
-	tmpDumpFile     string
+	tmpDumpDir          string
+	tmpDumpFile         string
+	tmpDumpOriginalFile string
 	tdbctlSocket    string
 	adminUser       string
 	adminPwd        string
@@ -334,6 +336,12 @@ func (c *ImportSchemaFromLocalSpiderComp) commonMigrate() (err error) {
 		logger.Error("dump schema failed %s", err.Error())
 		return err
 	}
+	if c.Params.RewriteCreateTableIfNotExists {
+		if err = c.rewriteDumpSchemaFile(); err != nil {
+			logger.Error("rewrite dump schema failed %s", err.Error())
+			return err
+		}
+	}
 	if err = c.loadSchema(); err != nil {
 		logger.Error("load schema failed %s", err.Error())
 		return err
@@ -374,6 +382,12 @@ func (c *ImportSchemaFromLocalSpiderComp) dumpSchema() (err error) {
 		return err
 	}
 	return nil
+}
+
+func (c *ImportSchemaFromLocalSpiderComp) rewriteDumpSchemaFile() (err error) {
+	dumpFile := path.Join(c.tmpDumpDir, c.tmpDumpFile)
+	c.tmpDumpOriginalFile = c.tmpDumpFile + ".orig"
+	return rewriteSchemaDumpFile(dumpFile)
 }
 
 func (c *ImportSchemaFromLocalSpiderComp) loadSchema() (err error) {

@@ -43,6 +43,7 @@ func NewSpiderCtlCommand() *cobra.Command {
 				NewClusterSchemaRepairCommand(),
 				NewAppendDeploySpiderCtlCommand(),
 				NewImportSchemaToTdbctlCommand(),
+				NewRestoreSchemaFromBackendViaCtlCommand(),
 				NewCreateStageViaCtlCommand(),
 				NewTruncateOnCtlCommand(),
 				NewCreateToDBViaCtlCommand(),

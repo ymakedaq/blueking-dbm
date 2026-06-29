@@ -241,7 +241,7 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
         cluster_ticket: dict,
     ) -> Any:
         """
-        Stage 2 - master 路由段：DBMeta 写入 → 表结构同步 → 权限恢复 → init_tdbctl_routing(×2)。
+        Stage 2 - master 路由段：DBMeta 写入 → init_tdbctl_routing（全量）→ 表结构同步 → 权限恢复。
         必须在 Stage 1 安装段完成后串行执行；slave 路由段必须等本段完成。
 
         DBMeta 写入提前到表结构同步之前：表结构同步内的"安装临时备份程序"会通过 ORM 查 Machine 表
@@ -255,6 +255,32 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
             act_name=_("更新 DBMeta（新增 Spider Master）"),
             act_component_code=SpiderDBMetaComponent.code,
             kwargs=asdict(DBMetaOPKwargs(db_meta_class_func=SpiderDBMeta.add_spider_master_nodes_apply.__name__)),
+        )
+
+        # 由 master 安装段写入；slave-only 场景不会进入本段
+        tdbctl_pass = cluster_ticket["tdbctl_pass"]
+        routing_extend = build_append_deploy_style_routing_extend(
+            cluster=cluster,
+            new_spider_hosts=new_masters,
+            spider_port=spider_port,
+            ctl_port=ctl_port,
+            tdbctl_user=TDBCTL_USER,
+            tdbctl_pass=tdbctl_pass,
+        )
+        routing_extend["not_flush_all"] = False
+        seg.add_act(
+            act_name=_("分片路由初始化"),
+            act_component_code=ExecuteDBActuatorScriptComponent.code,
+            kwargs=asdict(
+                ExecActuatorKwargs(
+                    exec_ip=primary_ctl_ip,
+                    bk_cloud_id=cluster.bk_cloud_id,
+                    cluster_type=ClusterType.TenDBCluster.value,
+                    run_as_system_user=DBA_ROOT_USER,
+                    get_mysql_payload_func=MysqlActPayload.get_init_tdbctl_routing_payload.__name__,
+                    cluster=routing_extend,
+                )
+            ),
         )
 
         if not info.get("skip_schema_sync", False):
@@ -279,46 +305,6 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
             ctl_port=ctl_port,
         )
 
-        # 由 master 安装段写入；slave-only 场景不会进入本段
-        tdbctl_pass = cluster_ticket["tdbctl_pass"]
-        routing_extend = build_append_deploy_style_routing_extend(
-            cluster=cluster,
-            new_spider_hosts=new_masters,
-            spider_port=spider_port,
-            ctl_port=ctl_port,
-            tdbctl_user=TDBCTL_USER,
-            tdbctl_pass=tdbctl_pass,
-        )
-        routing_extend["only_init_ctl"] = True
-        seg.add_act(
-            act_name=_("初始化中控路由（仅中控）"),
-            act_component_code=ExecuteDBActuatorScriptComponent.code,
-            kwargs=asdict(
-                ExecActuatorKwargs(
-                    exec_ip=primary_ctl_ip,
-                    bk_cloud_id=cluster.bk_cloud_id,
-                    cluster_type=ClusterType.TenDBCluster.value,
-                    run_as_system_user=DBA_ROOT_USER,
-                    get_mysql_payload_func=MysqlActPayload.get_init_tdbctl_routing_payload.__name__,
-                    cluster=routing_extend,
-                )
-            ),
-        )
-        routing_extend["only_init_ctl"] = False
-        seg.add_act(
-            act_name=_("刷新 Spider 与分片路由"),
-            act_component_code=ExecuteDBActuatorScriptComponent.code,
-            kwargs=asdict(
-                ExecActuatorKwargs(
-                    exec_ip=primary_ctl_ip,
-                    bk_cloud_id=cluster.bk_cloud_id,
-                    cluster_type=ClusterType.TenDBCluster.value,
-                    run_as_system_user=DBA_ROOT_USER,
-                    get_mysql_payload_func=MysqlActPayload.get_init_tdbctl_routing_payload.__name__,
-                    cluster=routing_extend,
-                )
-            ),
-        )
         return seg.build_sub_process(sub_name=_("[{}] master 路由段").format(cluster.immute_domain))
 
     def _build_slave_routing_segment(
@@ -388,9 +374,8 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
         ctl_port: int,
         cluster_ticket: dict,
     ) -> None:
-        """主中控机上 mysqldump 表结构 + 推送至 peer Spider。"""
+        """主中控机上从 Remote 导出表结构，改写后导入中控（表结构由中控自动同步至 Spider）。"""
         shard_host, shard_port = get_shard_zero_remote_master(cluster)
-        spider_master_ips = [h["ip"] for h in new_masters]
         media_getter = GetFileList(db_type=DBType.MySQL)
         schema_media_list = media_getter.get_db_actuator_package() + media_getter.get_mysql_surrounding_apps_package(
             is_install_backup=True,
@@ -425,7 +410,6 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
 
         # 表结构同步只在 master 路由段调用，前置 master 安装段已写入 tdbctl_pass
         tdbctl_pass = cluster_ticket["tdbctl_pass"]
-        # 上架 Spider 多于 1：主节点 mysqldump 一次后由 mysql 客户端推送到其它 Spider（spider_master_ips[1:] 可为空时仅灌主 Spider）
         schema_cluster_base = {
             "ctl_port": ctl_port,
             "spider_port": spider_port,
@@ -437,11 +421,9 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
             "shard_0_port": shard_port,
             "tdbctl_user": TDBCTL_USER,
             "tdbctl_pass": tdbctl_pass,
-            "also_import_to_spider": True,
-            "spider_peer_push_hosts": spider_master_ips[1:],
         }
         seg.add_act(
-            act_name=_("从 Remote 同步表结构至中控、本机 Spider 并推送至其它 Spider（主）"),
+            act_name=_("从 Remote 同步表结构至中控（主）"),
             act_component_code=ExecuteDBActuatorScriptComponent.code,
             kwargs=asdict(
                 ExecActuatorKwargs(
@@ -449,7 +431,7 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
                     bk_cloud_id=cluster.bk_cloud_id,
                     cluster_type=ClusterType.TenDBCluster.value,
                     run_as_system_user=DBA_ROOT_USER,
-                    get_mysql_payload_func=MysqlActPayload.get_import_schema_to_tdbctl_payload.__name__,
+                    get_mysql_payload_func=MysqlActPayload.get_restore_schema_from_backend_via_ctl_payload.__name__,
                     cluster=schema_cluster_base,
                 )
             ),

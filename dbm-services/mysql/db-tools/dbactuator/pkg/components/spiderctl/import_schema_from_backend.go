@@ -575,6 +575,67 @@ func (c *ImportSchemaFromBackendComp) migrateUseMysqlDump() (err error) {
 	if err = c.dumpMysqlSchemaFilesToWorkdir(); err != nil {
 		return err
 	}
+	return c.importMysqlDumpSchemaToTdbctl()
+}
+
+// MigrateSchemaRewriteToTdbctl exports schema from backend, rewrites CREATE TABLE IF NOT EXISTS, then imports to tdbctl.
+func (c *ImportSchemaFromBackendComp) MigrateSchemaRewriteToTdbctl() (err error) {
+	if len(c.dumpDbs) == 0 {
+		logger.Info("当前没有需要拷贝的表，请检查，直接返回")
+		return nil
+	}
+	if err = c.dumpMysqlSchemaFilesToWorkdir(); err != nil {
+		return err
+	}
+	if err = c.rewriteMysqlDumpSchemaFiles(); err != nil {
+		return err
+	}
+	return c.importMysqlDumpSchemaToTdbctlForRestore()
+}
+
+func (c *ImportSchemaFromBackendComp) rewriteMysqlDumpSchemaFiles() (err error) {
+	if c.mysqlDumpFileInfo == nil || len(c.mysqlDumpFileInfo) == 0 {
+		return fmt.Errorf("mysqlDumpFileInfo empty, cannot rewrite mysqldump schema files")
+	}
+	for _, db := range c.dumpDbs {
+		dumpfile := c.mysqlDumpFileInfo[buildBackendDb(db)]
+		if dumpfile == "" {
+			return fmt.Errorf("dump file not found for db %s", db)
+		}
+		dumpPath := path.Join(c.tmpDumpDir, dumpfile)
+		if err = rewriteSchemaDumpFile(dumpPath); err != nil {
+			return fmt.Errorf("rewrite dump schema for db %s failed: %w", db, err)
+		}
+	}
+	return nil
+}
+
+func (c *ImportSchemaFromBackendComp) importMysqlDumpSchemaToTdbctl() (err error) {
+	return c.importMysqlDumpSchemaToTdbctlWithOpts(mysqlDumpSchemaToTdbctlImportOpts{
+		setTcAdminOff:             true,
+		createDatabaseIfNotExists: false,
+	})
+}
+
+// importMysqlDumpSchemaToTdbctlForRestore imports rewritten schema to tdbctl without tc_admin=0 and uses CREATE DATABASE IF NOT EXISTS.
+func (c *ImportSchemaFromBackendComp) importMysqlDumpSchemaToTdbctlForRestore() (err error) {
+	return c.importMysqlDumpSchemaToTdbctlWithOpts(mysqlDumpSchemaToTdbctlImportOpts{
+		setTcAdminOff:             false,
+		createDatabaseIfNotExists: true,
+	})
+}
+
+type mysqlDumpSchemaToTdbctlImportOpts struct {
+	setTcAdminOff             bool
+	createDatabaseIfNotExists bool
+}
+
+func (c *ImportSchemaFromBackendComp) importMysqlDumpSchemaToTdbctlWithOpts(
+	opts mysqlDumpSchemaToTdbctlImportOpts,
+) (err error) {
+	if c.mysqlDumpFileInfo == nil || len(c.mysqlDumpFileInfo) == 0 {
+		return fmt.Errorf("mysqlDumpFileInfo empty, cannot import mysqldump schema to tdbctl")
+	}
 	logger.Info("备份表结构成功,开始导入表结构到中控")
 	dumpfileInfo := c.mysqlDumpFileInfo
 	loader := mysqlutil.ExecuteSqlAtLocal{
@@ -587,6 +648,10 @@ func (c *ImportSchemaFromBackendComp) migrateUseMysqlDump() (err error) {
 		User:             c.GeneralParam.RuntimeAccountParam.AdminUser,
 		Password:         c.GeneralParam.RuntimeAccountParam.AdminPwd,
 		WorkDir:          c.tmpDumpDir,
+	}
+	createDBStmt := "CREATE DATABASE %s /*!40100 DEFAULT CHARACTER SET %s */;"
+	if opts.createDatabaseIfNotExists {
+		createDBStmt = "CREATE DATABASE IF NOT EXISTS %s /*!40100 DEFAULT CHARACTER SET %s */;"
 	}
 	errChan := make(chan error)
 	wg := sync.WaitGroup{}
@@ -602,21 +667,20 @@ func (c *ImportSchemaFromBackendComp) migrateUseMysqlDump() (err error) {
 		go func(conn *sql.Conn, db string, dumpfile string) {
 			ctrChan <- struct{}{}
 			defer func() { wg.Done(); <-ctrChan }()
-			_, err = conn.ExecContext(context.Background(), "set tc_admin=0;")
-			if err != nil {
-				logger.Error("set session tc_admin=0 failed:%s", err.Error())
-				errChan <- err
-			}
 			defer conn.Close()
-			_, err := conn.ExecContext(context.Background(), fmt.Sprintf(
-				"CREATE DATABASE %s /*!40100 DEFAULT CHARACTER SET %s */;", db, c.charset))
-			if err != nil {
+			if opts.setTcAdminOff {
+				if _, err := conn.ExecContext(context.Background(), "set tc_admin=0;"); err != nil {
+					logger.Error("set session tc_admin=0 failed:%s", err.Error())
+					errChan <- err
+					return
+				}
+			}
+			if _, err := conn.ExecContext(context.Background(), fmt.Sprintf(createDBStmt, db, c.charset)); err != nil {
 				logger.Error("创建数据库:%s 失败:%s", db, err.Error())
 				errChan <- err
 				return
 			}
-			err = loader.ExecuteSqlByMySQLClientOne(dumpfile, db, true)
-			if err != nil {
+			if err := loader.ExecuteSqlByMySQLClientOne(dumpfile, db, true); err != nil {
 				logger.Error("执行导入schema文件:%s 失败:%s", dumpfile, err.Error())
 				errChan <- err
 			}

@@ -446,6 +446,9 @@ class DBActuatorActionEnum(StrStructuredEnum):
     Deploy = EnumField("deploy", _("deploy"))
     AppendDeploy = EnumField("append-deploy", _("append-deploy"))
     ImportSchemaToTdbctl = EnumField("import-schema-to-tdbctl", _("import-schema-to-tdbctl"))
+    RestoreSchemaFromBackendViaCtl = EnumField(
+        "restore-schema-from-backend-via-ctl", _("restore-schema-from-backend-via-ctl")
+    )
     CheckTdbctlWithSpiderSchema = EnumField("check-tdbctl-with-spider-schema", _("check-tdbctl-with-spider-schema"))
     CheckTdbctlWithSpiderRouter = EnumField("check-tdbctl-with-spider-router", _("check-tdbctl-with-spider-router"))
     ClusterSchemaCheck = EnumField("schema-check", _("schema-check"))

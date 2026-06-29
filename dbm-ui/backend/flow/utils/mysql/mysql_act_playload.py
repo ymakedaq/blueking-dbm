@@ -470,6 +470,30 @@ class MysqlActPayload(PayloadHandler, ProxyActPayload, TBinlogDumperActPayload):
             },
         }
 
+    def get_restore_schema_from_backend_via_ctl_payload(self, **kwargs):
+        """从 Backend 导出表结构，改写 CREATE TABLE IF NOT EXISTS 后导入中控（由中控自动同步至 Spider）。"""
+        extend = {
+            "host": kwargs["ip"],
+            "port": self.cluster["ctl_port"],
+            "backend_host": self.cluster["shard_0_host"],
+            "backend_port": self.cluster["shard_0_port"],
+            "spider_port": self.cluster["spider_port"],
+            "use_mydumper": self.cluster.get("use_mydumper", False),
+            "stream": self.cluster.get("stream", False),
+            "drop_before": self.cluster.get("drop_before", False),
+            "threads": self.cluster.get("threads", 4),
+            "tdbctl_user": self.cluster["tdbctl_user"],
+            "tdbctl_pass": self.cluster["tdbctl_pass"],
+        }
+        return {
+            "db_type": DBActuatorTypeEnum.SpiderCtl.value,
+            "action": DBActuatorActionEnum.RestoreSchemaFromBackendViaCtl.value,
+            "payload": {
+                "general": {"runtime_account": self.account},
+                "extend": extend,
+            },
+        }
+
     def get_check_schema_payload(self, **kwargs):
         return {
             "db_type": DBActuatorTypeEnum.SpiderCtl.value,
@@ -1403,7 +1427,7 @@ class MysqlActPayload(PayloadHandler, ProxyActPayload, TBinlogDumperActPayload):
                     "ctl_instances": self.cluster["ctl_instances"],
                     "tdbctl_user": self.cluster["tdbctl_user"],
                     "tdbctl_pass": self.cluster["tdbctl_pass"],
-                    "not_flush_all": True,
+                    "not_flush_all": self.cluster.get("not_flush_all", True),
                     "only_init_ctl": self.cluster["only_init_ctl"],
                 },
             },
