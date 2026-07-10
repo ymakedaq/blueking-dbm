@@ -355,6 +355,7 @@ class MediumEnum(StrStructuredEnum):
     Riak = EnumField("riak", _("riak"))
     RiakMonitor = EnumField("riak-monitor", _("riak-monitor"))
     RedisDts = EnumField("redis-dts", _("redis-dts"))
+    MySQLDts = EnumField("mysql-dts", _("mysql-dts"))
     RedisModules = EnumField("redis-modules", _("redis-modules"))
     TBinlogDumper = EnumField("tbinlogdumper", _("tbinlogdumper实例"))
     Sqlserver = EnumField("sqlserver", _("sqlserver实例"))

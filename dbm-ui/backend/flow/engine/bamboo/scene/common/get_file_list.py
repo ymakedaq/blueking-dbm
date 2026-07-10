@@ -803,3 +803,13 @@ class GetFileList(object):
             [f"{env.BKREPO_PROJECT}/{env.BKREPO_BUCKET}/{probe_pkg.path}"],
             probe_pkg.name,
         )
+
+    @classmethod
+    def mysql_dts_deploy(cls, pkg_id: int | None = None) -> tuple[list[str], str]:
+        from backend.flow.utils.mysql.dts.package_resolver import (
+            build_mysql_dts_bkrepo_paths,
+            resolve_mysql_dts_package,
+        )
+
+        pkg = resolve_mysql_dts_package(pkg_id=pkg_id)
+        return build_mysql_dts_bkrepo_paths(pkg)

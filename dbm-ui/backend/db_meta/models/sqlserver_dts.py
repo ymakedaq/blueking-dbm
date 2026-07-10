@@ -20,8 +20,6 @@ from django.utils.translation import gettext_lazy as _
 from backend.bk_web.models import AuditedModel
 from backend.db_meta.exceptions import ClusterExclusiveOperateException
 from backend.flow.consts import SqlserverDtsMode
-from backend.ticket.builders.common.base import fetch_cluster_ids
-from backend.ticket.constants import TicketType
 from blue_krill.data_types.enum import EnumField, StrStructuredEnum
 
 logger = logging.getLogger("root")
@@ -85,6 +83,10 @@ class SqlserverDtsInfo(AuditedModel):
 
     @classmethod
     def dts_info_clusive(cls, ticket_id: int, ticket_type: str, details: Dict[str, Any]):
+        # 延迟导入，避免 db_meta.models ↔ ticket.builders 循环依赖
+        from backend.ticket.builders.common.base import fetch_cluster_ids
+        from backend.ticket.constants import TicketType
+
         cluster_ids = fetch_cluster_ids(details=details)
         dts_infos = cls.objects.filter(
             (Q(source_cluster_id__in=cluster_ids) | Q(target_cluster_id__in=cluster_ids))

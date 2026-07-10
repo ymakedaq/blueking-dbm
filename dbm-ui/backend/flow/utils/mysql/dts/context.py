@@ -1,0 +1,169 @@
+# -*- coding: utf-8 -*-
+"""
+TencentBlueKing is pleased to support the open source community by making 蓝鲸智云-DB管理系统(BlueKing-BK-DBM) available.
+Copyright (C) 2017-2023 THL A29 Limited, a Tencent company. All rights reserved.
+Licensed under the MIT License (the "License"); you may not use this file except in compliance with the License.
+You may obtain a copy of the License at https://opensource.org/licenses/MIT
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on
+an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+"""
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+from backend.flow.utils.mysql.dts.constants import DtsRegisterMode
+
+if TYPE_CHECKING:
+    from backend.flow.utils.mysql.dts.migrate_plan import DtsMigratePlan
+
+
+@dataclass
+class DtsHostSpec:
+    ip: str
+    bk_cloud_id: int
+    name: str | None = None
+
+
+@dataclass
+class MysqlDtsDeployContext:
+    master_addr: str = ""
+    deployed_master_nodes: list = field(default_factory=list)
+    deployed_worker_nodes: list = field(default_factory=list)
+    pkg_name: str = ""
+    dts_version: str = ""
+
+
+@dataclass
+class MysqlDtsMigrateContext:
+    master_addr: str = ""
+    dts_cluster_id: int | None = None
+    created_dts_info_ids: list[int] = field(default_factory=list)
+    dts_user: str = ""
+    dts_password: str = ""
+    registered_source_names: list[str] = field(default_factory=list)
+    # create_user 写入，供后续 drop_user 子流程使用（不含密码）
+    grant_hosts: list[str] = field(default_factory=list)
+    grant_targets: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class MysqlDtsDeploySubflowInput:
+    root_id: str
+    bk_biz_id: int
+    bk_cloud_id: int
+    cluster_name: str
+    master_hosts: list[DtsHostSpec]
+    worker_hosts: list[DtsHostSpec]
+    deploy_path: str = ""
+    master_ha: bool = False
+    dts_pkg_id: int | None = None
+    register_mode: str = DtsRegisterMode.CREATE.value
+    creator: str = ""
+
+
+@dataclass
+class MysqlDtsDeployMasterSubflowInput:
+    root_id: str
+    bk_biz_id: int
+    bk_cloud_id: int
+    cluster_name: str
+    hosts: list[DtsHostSpec]
+    deploy_path: str
+    master_ha: bool = False
+    dts_pkg_id: int | None = None
+
+
+@dataclass
+class MysqlDtsDeployWorkerSubflowInput:
+    root_id: str
+    bk_biz_id: int
+    bk_cloud_id: int
+    cluster_name: str
+    hosts: list[DtsHostSpec]
+    master_addr: str
+    deploy_path: str
+    dts_pkg_id: int | None = None
+    register_mode: str = DtsRegisterMode.CREATE.value
+
+
+@dataclass
+class MysqlDtsDeployColocatedHostSubflowInput:
+    root_id: str
+    bk_biz_id: int
+    bk_cloud_id: int
+    cluster_name: str
+    host: DtsHostSpec
+    deploy_path: str
+    master_ha: bool = False
+    dts_pkg_id: int | None = None
+
+
+@dataclass
+class MysqlDtsAppendWorkerSubflowInput:
+    root_id: str
+    dts_cluster_id: int
+    bk_biz_id: int
+    bk_cloud_id: int
+    master_addr: str
+    deploy_path: str
+    existing_worker_nodes: list[dict]
+    new_worker_hosts: list[DtsHostSpec]
+    dts_pkg_id: int | None = None
+    register_mode: str = DtsRegisterMode.APPEND_WORKER.value
+    creator: str = ""
+
+
+@dataclass
+class MysqlDtsCleanupSubflowInput:
+    root_id: str
+    dts_cluster_id: int
+    bk_biz_id: int
+    bk_cloud_id: int
+    master_addr: str
+    master_nodes: list[dict]
+    worker_nodes: list[dict]
+    deploy_path: str
+    force_destroy: bool = False
+    recycle_hosts: bool = True
+    clean_data_dir: bool = True
+    target_hosts: list[DtsHostSpec] | None = None
+    creator: str = ""
+
+
+@dataclass
+class MysqlDtsMigrateSubflowInput:
+    root_id: str
+    bk_biz_id: int
+    ticket_id: int
+    migrate_plan: "DtsMigratePlan"
+    creator: str = ""
+
+
+@dataclass
+class MysqlDtsDropUserSubflowInput:
+    """删除 DTS 迁移临时账号子流程入参。
+
+    调用时机由业务侧决定（断开同步 / 终态清理 / DESTROY 等），本子流程只负责执行 DROP。
+    """
+
+    root_id: str
+    bk_biz_id: int
+    dts_user: str
+    grant_hosts: list[str]
+    grant_targets: list[dict]  # [{"bk_cloud_id": int, "address": "ip:port", ...}, ...]
+    ignore_errors: bool = True  # 用户不存在等视为可忽略，默认尽力清理
+    creator: str = ""
+
+
+@dataclass
+class HostDeployPlan:
+    colocated_hosts: list[DtsHostSpec] = field(default_factory=list)
+    master_only_hosts: list[DtsHostSpec] = field(default_factory=list)
+    worker_only_hosts: list[DtsHostSpec] = field(default_factory=list)
+
+
+@dataclass
+class MysqlDtsTransData:
+    deploy_context: MysqlDtsDeployContext = field(default_factory=MysqlDtsDeployContext)
+    migrate_context: MysqlDtsMigrateContext = field(default_factory=MysqlDtsMigrateContext)
+    extra: dict[str, Any] = field(default_factory=dict)

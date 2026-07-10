@@ -35,6 +35,7 @@ from backend.db_periodic_task.local_tasks.mysql_backup_rollback import backup_da
 from backend.db_periodic_task.local_tasks.mysql_check_partition import *
 from backend.db_periodic_task.local_tasks.mysql_checksum import check_checksum_task
 from backend.db_periodic_task.local_tasks.mysql_cluster_skew import calculate_tendbcluster_skew, calculate_tendbha_skew
+from backend.db_periodic_task.local_tasks.mysql_dts_status_poll import poll_mysql_dts_migrate_status
 from backend.db_periodic_task.local_tasks.mysql_exporter_heartbeat import *
 from backend.db_periodic_task.local_tasks.mysql_failover_drill import *
 from backend.db_periodic_task.local_tasks.mysql_partition import *
