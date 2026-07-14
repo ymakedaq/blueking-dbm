@@ -85,7 +85,7 @@ data-dir = "{data_dir}"
 log-file = "{log_file}"
 log-level = "info"
 log-rotate = "1d"
-openapi = false
+openapi = true
 """
 
 

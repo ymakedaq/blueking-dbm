@@ -40,8 +40,9 @@ if [[ ! -f "${BIN_DIR}/dm-master" ]]; then
 fi
 chmod +x "${BIN_DIR}/dm-master"
 
-setsid "${BIN_DIR}/dm-master" -config "${CONF_DIR}/{{config_file}}" \\
-  > "${LOG_DIR}/{{node_name}}.output" 2>&1 &
+# -f 强制 fork，脚本不会被 dm-master 堵住；新 session 脱离 Job/SSH 会话
+setsid -f "${BIN_DIR}/dm-master" -config "${CONF_DIR}/{{config_file}}" \\
+  > "${LOG_DIR}/{{node_name}}.output" 2>&1 < /dev/null
 sleep 2
 if ! pgrep -f "${BIN_DIR}/dm-master" >/dev/null 2>&1; then
   echo "dm-master failed to start:" >&2
@@ -81,8 +82,9 @@ if [[ ! -f "${BIN_DIR}/dm-worker" ]]; then
 fi
 chmod +x "${BIN_DIR}/dm-worker"
 
-setsid "${BIN_DIR}/dm-worker" -config "${CONF_DIR}/{{config_file}}" \\
-  > "${LOG_DIR}/{{node_name}}.output" 2>&1 &
+# -f 强制 fork，脚本不会被 dm-worker 堵住；新 session 脱离 Job/SSH 会话
+setsid -f "${BIN_DIR}/dm-worker" -config "${CONF_DIR}/{{config_file}}" \\
+  > "${LOG_DIR}/{{node_name}}.output" 2>&1 < /dev/null
 sleep 2
 if ! pgrep -f "${BIN_DIR}/dm-worker" >/dev/null 2>&1; then
   echo "dm-worker failed to start:" >&2
