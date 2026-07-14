@@ -46,15 +46,16 @@ def _get_v2_package_by_phase(
     )
     if not packages:
         return None
-    packages.sort(
+    # Package 无 recommend 字段；recommend 在 DBVersion 上，priority 在 Package 上
+    # 与 mysql_rollback_exercise 的 V2 选包逻辑保持一致
+    return max(
+        packages,
         key=lambda pkg: (
-            pkg.db_version.full_version if pkg.db_version else "",
-            pkg.recommend,
+            pkg.db_version.full_version_n if pkg.db_version else 0,
+            pkg.db_version.recommend if pkg.db_version else False,
             pkg.priority,
         ),
-        reverse=True,
     )
-    return packages[0]
 
 
 def resolve_mysql_dts_package(
