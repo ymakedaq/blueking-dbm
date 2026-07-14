@@ -9,6 +9,7 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 """
 from backend.flow.utils.mysql.dts.constants import (
+    MYSQL_DTS_MASTER_PEER_PORT,
     MYSQL_DTS_MASTER_PORT,
     MYSQL_DTS_WORKER_PORT,
     get_default_deploy_path,
@@ -34,9 +35,10 @@ def hosts_to_exec_targets(hosts: list[DtsHostSpec]) -> list[dict]:
 
 def build_master_nodes(hosts: list[DtsHostSpec], master_ha: bool = False) -> list[dict]:
     nodes = []
-    peer_addrs = [f"{host.ip}:{MYSQL_DTS_MASTER_PORT}" for host in hosts]
+    peer_addrs = []
     for idx, host in enumerate(hosts, start=1):
         name = host.name or build_master_node_name(idx)
+        peer_addrs.append(f"{name}=http://{host.ip}:{MYSQL_DTS_MASTER_PEER_PORT}")
         nodes.append(
             DeployedNodeInfo(
                 ip=host.ip,

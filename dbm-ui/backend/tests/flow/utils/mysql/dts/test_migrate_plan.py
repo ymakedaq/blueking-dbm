@@ -108,3 +108,8 @@ class DeployHelperTest(SimpleTestCase):
         )
         self.assertIn("dm-master-1", content)
         self.assertIn("/data/dts/test/", content)
+        self.assertIn("master-addr", content)
+        self.assertIn("peer-urls", content)
+        self.assertIn("log-file", content)
+        self.assertNotIn("[log]", content)
+        self.assertNotIn("[security]", content)

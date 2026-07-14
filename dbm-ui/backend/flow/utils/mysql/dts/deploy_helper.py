@@ -67,31 +67,25 @@ def render_master_config(
     master_ha: bool = False,
     peer_addrs: list[str] | None = None,
 ) -> str:
+    """渲染 dm-master.toml，字段对齐官方 mysql-dts 介质包样例。"""
     data_dir = f"{deploy_path}/{node_name}-data"
     log_file = f"{deploy_path}/{node_name}.log"
-    peer_addrs = peer_addrs or []
-    initial_cluster = (
-        ", ".join(f'"{addr}"' for addr in peer_addrs)
-        if peer_addrs
-        else f'"{advertise_ip}:{MYSQL_DTS_MASTER_PEER_PORT}"'
-    )
-    return f"""name = "{node_name}"
-data-dir = "{data_dir}"
+    peer_url = f"http://{advertise_ip}:{MYSQL_DTS_MASTER_PEER_PORT}"
+    if peer_addrs:
+        # peer_addrs 形如 ["dm-master-1=http://ip:18401", ...]
+        initial_cluster = ",".join(peer_addrs)
+    else:
+        initial_cluster = f"{node_name}={peer_url}"
+    return f"""# dm-master.toml
+name = "{node_name}"
 master-addr = "{advertise_ip}:{MYSQL_DTS_MASTER_PORT}"
-advertise-addr = "{advertise_ip}:{MYSQL_DTS_MASTER_PORT}"
-peer-urls = "{advertise_ip}:{MYSQL_DTS_MASTER_PEER_PORT}"
-advertise-peer-urls = "{advertise_ip}:{MYSQL_DTS_MASTER_PEER_PORT}"
-initial-cluster = {initial_cluster}
-initial-cluster-state = "new"
-
-[log]
-level = "info"
-file = "{log_file}"
-
-[security]
-ssl-ca = ""
-ssl-cert = ""
-ssl-key = ""
+peer-urls = "{peer_url}"
+initial-cluster = "{initial_cluster}"
+data-dir = "{data_dir}"
+log-file = "{log_file}"
+log-level = "info"
+log-rotate = "1d"
+openapi = false
 """
 
 
@@ -103,24 +97,20 @@ def render_worker_config(
     master_addr: str,
     join_addrs: list[str] | None = None,
 ) -> str:
+    """渲染 dm-worker.toml，字段对齐官方 mysql-dts 介质包样例。"""
     relay_dir = f"{deploy_path}/{node_name}-data"
     log_file = f"{deploy_path}/{node_name}.log"
+    # 样例为字符串 join = "ip:18301"；多 Master 时用逗号拼接
     join_addrs = join_addrs or [master_addr]
-    join_str = ", ".join(f'"{addr}"' for addr in join_addrs)
-    return f"""name = "{node_name}"
-join = [{join_str}]
+    join_value = ",".join(join_addrs)
+    return f"""# dm-worker.toml
+name = "{node_name}"
 worker-addr = "{advertise_ip}:{MYSQL_DTS_WORKER_PORT}"
-advertise-addr = "{advertise_ip}:{MYSQL_DTS_WORKER_PORT}"
+join = "{join_value}"
 relay-dir = "{relay_dir}"
-
-[log]
-level = "info"
-file = "{log_file}"
-
-[security]
-ssl-ca = ""
-ssl-cert = ""
-ssl-key = ""
+log-file = "{log_file}"
+log-level = "info"
+log-rotate = "1d"
 """
 
 

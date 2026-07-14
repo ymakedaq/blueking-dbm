@@ -8,6 +8,8 @@ Unless required by applicable law or agreed to in writing, software distributed 
 an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 """
+
+# 介质包布局固定为 dts/{bin,conf,scripts,...}，解到 deploy_path 去掉顶层 dts/ 即可。
 start_mysql_dts_master_template = """
 set -euo pipefail
 DEPLOY_PATH="{{deploy_path}}"
@@ -18,7 +20,7 @@ LOG_DIR="${DEPLOY_PATH}/log"
 PKG_FILE="/data/install/${PKG_NAME}"
 
 if [[ -z "${PKG_NAME}" ]]; then
-  echo "pkg_name is empty, cannot extract DTS package" >&2
+  echo "pkg_name is empty" >&2
   exit 1
 fi
 if [[ ! -f "${PKG_FILE}" ]]; then
@@ -27,22 +29,22 @@ if [[ ! -f "${PKG_FILE}" ]]; then
   exit 1
 fi
 
-mkdir -p "${BIN_DIR}" "${CONF_DIR}" "${LOG_DIR}"
-if ! tar -zxf "${PKG_FILE}" -C "${BIN_DIR}" --strip-components=1 2>/dev/null; then
-  tar -xf "${PKG_FILE}" -C "${BIN_DIR}" --strip-components=1
+mkdir -p "${DEPLOY_PATH}" "${CONF_DIR}" "${LOG_DIR}"
+if ! tar -zxf "${PKG_FILE}" -C "${DEPLOY_PATH}" --strip-components=1 2>/dev/null; then
+  tar -xf "${PKG_FILE}" -C "${DEPLOY_PATH}" --strip-components=1
 fi
-if [[ ! -x "${BIN_DIR}/dm-master" && ! -f "${BIN_DIR}/dm-master" ]]; then
-  echo "dm-master binary missing after extract, BIN_DIR contents:" >&2
-  ls -la "${BIN_DIR}" || true
+if [[ ! -f "${BIN_DIR}/dm-master" ]]; then
+  echo "dm-master missing after extract, expect ${BIN_DIR}/dm-master" >&2
+  ls -la "${DEPLOY_PATH}" "${BIN_DIR}" || true
   exit 1
 fi
 chmod +x "${BIN_DIR}/dm-master"
 
-setsid "${BIN_DIR}/dm-master" -config "${CONF_DIR}/{{config_file}}" \
+setsid "${BIN_DIR}/dm-master" -config "${CONF_DIR}/{{config_file}}" \\
   > "${LOG_DIR}/{{node_name}}.output" 2>&1 &
 sleep 2
 if ! pgrep -f "${BIN_DIR}/dm-master" >/dev/null 2>&1; then
-  echo "dm-master failed to start, output:" >&2
+  echo "dm-master failed to start:" >&2
   cat "${LOG_DIR}/{{node_name}}.output" >&2 || true
   exit 1
 fi
@@ -59,7 +61,7 @@ LOG_DIR="${DEPLOY_PATH}/log"
 PKG_FILE="/data/install/${PKG_NAME}"
 
 if [[ -z "${PKG_NAME}" ]]; then
-  echo "pkg_name is empty, cannot extract DTS package" >&2
+  echo "pkg_name is empty" >&2
   exit 1
 fi
 if [[ ! -f "${PKG_FILE}" ]]; then
@@ -68,22 +70,22 @@ if [[ ! -f "${PKG_FILE}" ]]; then
   exit 1
 fi
 
-mkdir -p "${BIN_DIR}" "${CONF_DIR}" "${LOG_DIR}"
-if ! tar -zxf "${PKG_FILE}" -C "${BIN_DIR}" --strip-components=1 2>/dev/null; then
-  tar -xf "${PKG_FILE}" -C "${BIN_DIR}" --strip-components=1
+mkdir -p "${DEPLOY_PATH}" "${CONF_DIR}" "${LOG_DIR}"
+if ! tar -zxf "${PKG_FILE}" -C "${DEPLOY_PATH}" --strip-components=1 2>/dev/null; then
+  tar -xf "${PKG_FILE}" -C "${DEPLOY_PATH}" --strip-components=1
 fi
-if [[ ! -x "${BIN_DIR}/dm-worker" && ! -f "${BIN_DIR}/dm-worker" ]]; then
-  echo "dm-worker binary missing after extract, BIN_DIR contents:" >&2
-  ls -la "${BIN_DIR}" || true
+if [[ ! -f "${BIN_DIR}/dm-worker" ]]; then
+  echo "dm-worker missing after extract, expect ${BIN_DIR}/dm-worker" >&2
+  ls -la "${DEPLOY_PATH}" "${BIN_DIR}" || true
   exit 1
 fi
 chmod +x "${BIN_DIR}/dm-worker"
 
-setsid "${BIN_DIR}/dm-worker" -config "${CONF_DIR}/{{config_file}}" \
+setsid "${BIN_DIR}/dm-worker" -config "${CONF_DIR}/{{config_file}}" \\
   > "${LOG_DIR}/{{node_name}}.output" 2>&1 &
 sleep 2
 if ! pgrep -f "${BIN_DIR}/dm-worker" >/dev/null 2>&1; then
-  echo "dm-worker failed to start, output:" >&2
+  echo "dm-worker failed to start:" >&2
   cat "${LOG_DIR}/{{node_name}}.output" >&2 || true
   exit 1
 fi

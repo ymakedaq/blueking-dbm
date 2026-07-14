@@ -15,7 +15,8 @@ from blue_krill.data_types.enum import EnumField, StrStructuredEnum
 MYSQL_DTS_DEPLOY_BASE_PATH = "/data/dts"
 MYSQL_DTS_MASTER_PORT = 18301
 MYSQL_DTS_WORKER_PORT = 18501
-MYSQL_DTS_MASTER_PEER_PORT = 18302
+# 与官方 mysql-dts 包样例 conf 一致（dm-master.toml peer-urls）
+MYSQL_DTS_MASTER_PEER_PORT = 18401
 MYSQL_DTS_VERSION_SERIES = "latest"
 MYSQL_DTS_VERIFY_RETRY_INTERVAL = 5
 # 部署验收最长等待约 60s（12 * 5s）
