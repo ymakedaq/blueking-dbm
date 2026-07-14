@@ -84,7 +84,7 @@ def mysql_dts_deploy_colocated_host_subflow(inp: MysqlDtsDeployColocatedHostSubf
             "exec_targets": exec_targets,
             "deploy_path": deploy_path,
             "config_file": master_config_file(master_node["name"]),
-            "node_name": master_node["name"],
+            "dts_node_name": master_node["name"],
         },
     )
 
@@ -111,7 +111,7 @@ def mysql_dts_deploy_colocated_host_subflow(inp: MysqlDtsDeployColocatedHostSubf
             "exec_targets": exec_targets,
             "deploy_path": deploy_path,
             "config_file": worker_config_file(worker_node["name"]),
-            "node_name": worker_node["name"],
+            "dts_node_name": worker_node["name"],
         },
     )
     sub.add_act(

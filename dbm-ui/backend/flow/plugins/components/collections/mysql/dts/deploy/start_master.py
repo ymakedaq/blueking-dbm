@@ -38,11 +38,11 @@ class MysqlDtsStartMasterService(MysqlDtsExecShellService):
             deploy_path=kwargs["deploy_path"],
             pkg_name=pkg_name,
             config_file=kwargs["config_file"],
-            node_name=kwargs["node_name"],
+            dts_node_name=kwargs["dts_node_name"],
             listen_port=kwargs.get("listen_port", MYSQL_DTS_MASTER_PORT),
         )
         kwargs["shell_script"] = shell_script
-        self.log_info(_("启动 dm-master {}，介质包={}").format(kwargs["node_name"], pkg_name))
+        self.log_info(_("启动 dm-master {}，介质包={}").format(kwargs["dts_node_name"], pkg_name))
         return super()._execute(data, parent_data)
 
 

@@ -10,17 +10,42 @@ specific language governing permissions and limitations under the License.
 """
 
 # 介质包布局固定为 dts/{bin,conf,scripts,...}，解到 deploy_path 去掉顶层 dts/ 即可。
-start_mysql_dts_master_template = """
+#
+# 注意：日志文件必须用 dts_node_name（如 dm-master-1），不能用 pipeline 的 node_name。
+# SubBuilder.add_act 会把 kwargs["node_name"] 覆盖成中文 act_name（如「启动 Worker」）。
+
+# 后台启动：优先 setsid -f（util-linux 较新）；旧系统不支持 -f 时回退 setsid ... &
+_START_DAEMON_HELPER = """
+start_daemon() {
+  local bin="$1"
+  local conf="$2"
+  local out="$3"
+  if setsid -f true >/dev/null 2>&1; then
+    setsid -f "${bin}" -config "${conf}" > "${out}" 2>&1 < /dev/null
+  else
+    setsid "${bin}" -config "${conf}" > "${out}" 2>&1 < /dev/null &
+  fi
+}
+"""
+
+start_mysql_dts_master_template = (
+    """
 set -euo pipefail
 DEPLOY_PATH="{{deploy_path}}"
 PKG_NAME="{{pkg_name}}"
+DTS_NODE_NAME="{{dts_node_name}}"
 BIN_DIR="${DEPLOY_PATH}/bin"
 CONF_DIR="${DEPLOY_PATH}/conf"
 LOG_DIR="${DEPLOY_PATH}/log"
 PKG_FILE="/data/install/${PKG_NAME}"
+OUTPUT_FILE="${LOG_DIR}/${DTS_NODE_NAME}.output"
 
 if [[ -z "${PKG_NAME}" ]]; then
   echo "pkg_name is empty" >&2
+  exit 1
+fi
+if [[ -z "${DTS_NODE_NAME}" ]]; then
+  echo "dts_node_name is empty" >&2
   exit 1
 fi
 if [[ ! -f "${PKG_FILE}" ]]; then
@@ -39,10 +64,10 @@ if [[ ! -f "${BIN_DIR}/dm-master" ]]; then
   exit 1
 fi
 chmod +x "${BIN_DIR}/dm-master"
-
-# -f 强制 fork，脚本不会被 dm-master 堵住；新 session 脱离 Job/SSH 会话
-setsid -f "${BIN_DIR}/dm-master" -config "${CONF_DIR}/{{config_file}}" \\
-  > "${LOG_DIR}/{{node_name}}.output" 2>&1 < /dev/null
+"""
+    + _START_DAEMON_HELPER
+    + """
+start_daemon "${BIN_DIR}/dm-master" "${CONF_DIR}/{{config_file}}" "${OUTPUT_FILE}"
 
 LISTEN_PORT="{{listen_port}}"
 is_port_listen() {
@@ -67,23 +92,31 @@ for _i in $(seq 1 10); do
 done
 if [[ "${ready}" -ne 1 ]]; then
   echo "dm-master failed to become ready (process/port ${LISTEN_PORT}):" >&2
-  cat "${LOG_DIR}/{{node_name}}.output" >&2 || true
+  cat "${OUTPUT_FILE}" >&2 || true
   exit 1
 fi
-echo "started dm-master {{node_name}} (listen ${LISTEN_PORT})"
+echo "started dm-master ${DTS_NODE_NAME} (listen ${LISTEN_PORT})"
 """
+)
 
-start_mysql_dts_worker_template = """
+start_mysql_dts_worker_template = (
+    """
 set -euo pipefail
 DEPLOY_PATH="{{deploy_path}}"
 PKG_NAME="{{pkg_name}}"
+DTS_NODE_NAME="{{dts_node_name}}"
 BIN_DIR="${DEPLOY_PATH}/bin"
 CONF_DIR="${DEPLOY_PATH}/conf"
 LOG_DIR="${DEPLOY_PATH}/log"
 PKG_FILE="/data/install/${PKG_NAME}"
+OUTPUT_FILE="${LOG_DIR}/${DTS_NODE_NAME}.output"
 
 if [[ -z "${PKG_NAME}" ]]; then
   echo "pkg_name is empty" >&2
+  exit 1
+fi
+if [[ -z "${DTS_NODE_NAME}" ]]; then
+  echo "dts_node_name is empty" >&2
   exit 1
 fi
 if [[ ! -f "${PKG_FILE}" ]]; then
@@ -102,10 +135,10 @@ if [[ ! -f "${BIN_DIR}/dm-worker" ]]; then
   exit 1
 fi
 chmod +x "${BIN_DIR}/dm-worker"
-
-# -f 强制 fork，脚本不会被 dm-worker 堵住；新 session 脱离 Job/SSH 会话
-setsid -f "${BIN_DIR}/dm-worker" -config "${CONF_DIR}/{{config_file}}" \\
-  > "${LOG_DIR}/{{node_name}}.output" 2>&1 < /dev/null
+"""
+    + _START_DAEMON_HELPER
+    + """
+start_daemon "${BIN_DIR}/dm-worker" "${CONF_DIR}/{{config_file}}" "${OUTPUT_FILE}"
 
 LISTEN_PORT="{{listen_port}}"
 is_port_listen() {
@@ -130,11 +163,12 @@ for _i in $(seq 1 10); do
 done
 if [[ "${ready}" -ne 1 ]]; then
   echo "dm-worker failed to become ready (process/port ${LISTEN_PORT}):" >&2
-  cat "${LOG_DIR}/{{node_name}}.output" >&2 || true
+  cat "${OUTPUT_FILE}" >&2 || true
   exit 1
 fi
-echo "started dm-worker {{node_name}} (listen ${LISTEN_PORT})"
+echo "started dm-worker ${DTS_NODE_NAME} (listen ${LISTEN_PORT})"
 """
+)
 
 stop_mysql_dts_process_template = """
 set -euo pipefail

@@ -74,7 +74,7 @@ def mysql_dts_deploy_worker_subflow(inp: MysqlDtsDeployWorkerSubflowInput) -> Su
                 "exec_targets": [{"ip": host.ip, "bk_cloud_id": host.bk_cloud_id}],
                 "deploy_path": deploy_path,
                 "config_file": worker_config_file(node["name"]),
-                "node_name": node["name"],
+                "dts_node_name": node["name"],
             },
         )
 
