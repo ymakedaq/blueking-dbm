@@ -17,25 +17,9 @@ from pipeline.core.flow.activity import StaticIntervalGenerator
 from backend.components import MySQLDTSApi
 from backend.flow.plugins.components.collections.common.base_service import BaseService
 from backend.flow.utils.mysql.dts.constants import MYSQL_DTS_VERIFY_MAX_RETRIES, MYSQL_DTS_VERIFY_RETRY_INTERVAL
+from backend.flow.utils.mysql.dts.verify_helper import match_nodes
 
 logger = logging.getLogger("flow")
-
-
-def _extract_ip_from_addr(addr: str) -> str:
-    if not addr:
-        return ""
-    return addr.rsplit(":", 1)[0]
-
-
-def _match_nodes(api_items: list, expected_nodes: list[dict], role: str) -> bool:
-    if not expected_nodes:
-        return True
-    api_ips = {_extract_ip_from_addr(item.addr) for item in api_items}
-    for node in expected_nodes:
-        if node.get("ip") not in api_ips:
-            logger.warning(_("{} 节点 {} 未在 DTS 集群注册").format(role, node.get("ip")))
-            return False
-    return True
 
 
 class MysqlDtsDeployVerifyService(BaseService):
@@ -62,12 +46,10 @@ class MysqlDtsDeployVerifyService(BaseService):
             MySQLDTSApi.get_cluster_info(master_addr)
             if verify_role in ("master", "all") and expected_master_nodes:
                 masters_resp = MySQLDTSApi.list_masters(master_addr)
-                if not _match_nodes(masters_resp.data, expected_master_nodes, "Master"):
-                    raise ValueError(_("Master 节点未全部注册"))
+                match_nodes(masters_resp.data, expected_master_nodes, "Master")
             if verify_role in ("worker", "all") and expected_worker_nodes:
                 workers_resp = MySQLDTSApi.list_workers(master_addr)
-                if not _match_nodes(workers_resp.data, expected_worker_nodes, "Worker"):
-                    raise ValueError(_("Worker 节点未全部注册"))
+                match_nodes(workers_resp.data, expected_worker_nodes, "Worker")
 
             self.log_info(_("[{}] DTS 部署验收通过").format(node_name))
             self.finish_schedule()

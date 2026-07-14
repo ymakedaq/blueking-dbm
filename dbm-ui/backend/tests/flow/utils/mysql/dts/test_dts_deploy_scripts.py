@@ -148,12 +148,14 @@ tar -zxf "{PKG_PATH}" -C "{bin_dir}" --strip-components=1
             pkg_name=PKG_NAME,
             config_file=master_config_file,
             node_name=master_name,
+            listen_port=MASTER_PORT,
         )
         worker_script = self.env.from_string(start_mysql_dts_worker_template).render(
             deploy_path=self.deploy_path,
             pkg_name=PKG_NAME,
             config_file=worker_config_file,
             node_name=worker_name,
+            listen_port=WORKER_PORT,
         )
 
         self._run_bash(master_script)

@@ -15,6 +15,7 @@ from jinja2.sandbox import SandboxedEnvironment as Environment
 from pipeline.component_framework.component import Component
 
 from backend.flow.plugins.components.collections.mysql.dts.base_shell import MysqlDtsExecShellService
+from backend.flow.utils.mysql.dts.constants import MYSQL_DTS_MASTER_PORT
 from backend.flow.utils.mysql.dts.package_resolver import resolve_dts_pkg_name
 from backend.flow.utils.mysql.dts.script_template import start_mysql_dts_master_template
 
@@ -38,6 +39,7 @@ class MysqlDtsStartMasterService(MysqlDtsExecShellService):
             pkg_name=pkg_name,
             config_file=kwargs["config_file"],
             node_name=kwargs["node_name"],
+            listen_port=kwargs.get("listen_port", MYSQL_DTS_MASTER_PORT),
         )
         kwargs["shell_script"] = shell_script
         self.log_info(_("启动 dm-master {}，介质包={}").format(kwargs["node_name"], pkg_name))

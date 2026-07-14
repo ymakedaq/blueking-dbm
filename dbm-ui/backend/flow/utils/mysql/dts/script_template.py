@@ -43,13 +43,34 @@ chmod +x "${BIN_DIR}/dm-master"
 # -f 强制 fork，脚本不会被 dm-master 堵住；新 session 脱离 Job/SSH 会话
 setsid -f "${BIN_DIR}/dm-master" -config "${CONF_DIR}/{{config_file}}" \\
   > "${LOG_DIR}/{{node_name}}.output" 2>&1 < /dev/null
-sleep 2
-if ! pgrep -f "${BIN_DIR}/dm-master" >/dev/null 2>&1; then
-  echo "dm-master failed to start:" >&2
+
+LISTEN_PORT="{{listen_port}}"
+is_port_listen() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "(^|[.:])${port}$"
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -qE "(^|[.:])${port}$"
+  else
+    (echo >"/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1
+  fi
+}
+
+# 进程在 + master-addr 端口已监听，才视为启动成功（OpenAPI 注册由后续验收组件负责）
+ready=0
+for _i in $(seq 1 10); do
+  if pgrep -f "${BIN_DIR}/dm-master" >/dev/null 2>&1 && is_port_listen "${LISTEN_PORT}"; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [[ "${ready}" -ne 1 ]]; then
+  echo "dm-master failed to become ready (process/port ${LISTEN_PORT}):" >&2
   cat "${LOG_DIR}/{{node_name}}.output" >&2 || true
   exit 1
 fi
-echo "started dm-master {{node_name}}"
+echo "started dm-master {{node_name}} (listen ${LISTEN_PORT})"
 """
 
 start_mysql_dts_worker_template = """
@@ -85,13 +106,34 @@ chmod +x "${BIN_DIR}/dm-worker"
 # -f 强制 fork，脚本不会被 dm-worker 堵住；新 session 脱离 Job/SSH 会话
 setsid -f "${BIN_DIR}/dm-worker" -config "${CONF_DIR}/{{config_file}}" \\
   > "${LOG_DIR}/{{node_name}}.output" 2>&1 < /dev/null
-sleep 2
-if ! pgrep -f "${BIN_DIR}/dm-worker" >/dev/null 2>&1; then
-  echo "dm-worker failed to start:" >&2
+
+LISTEN_PORT="{{listen_port}}"
+is_port_listen() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "(^|[.:])${port}$"
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -qE "(^|[.:])${port}$"
+  else
+    (echo >"/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1
+  fi
+}
+
+# 进程在 + worker-addr 端口已监听，才视为启动成功
+ready=0
+for _i in $(seq 1 10); do
+  if pgrep -f "${BIN_DIR}/dm-worker" >/dev/null 2>&1 && is_port_listen "${LISTEN_PORT}"; then
+    ready=1
+    break
+  fi
+  sleep 1
+done
+if [[ "${ready}" -ne 1 ]]; then
+  echo "dm-worker failed to become ready (process/port ${LISTEN_PORT}):" >&2
   cat "${LOG_DIR}/{{node_name}}.output" >&2 || true
   exit 1
 fi
-echo "started dm-worker {{node_name}}"
+echo "started dm-worker {{node_name}} (listen ${LISTEN_PORT})"
 """
 
 stop_mysql_dts_process_template = """
