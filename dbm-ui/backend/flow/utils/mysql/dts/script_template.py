@@ -15,14 +15,37 @@ PKG_NAME="{{pkg_name}}"
 BIN_DIR="${DEPLOY_PATH}/bin"
 CONF_DIR="${DEPLOY_PATH}/conf"
 LOG_DIR="${DEPLOY_PATH}/log"
-mkdir -p "${BIN_DIR}" "${CONF_DIR}" "${LOG_DIR}"
-if [[ -f /data/install/${PKG_NAME} ]]; then
-  tar -zxf /data/install/${PKG_NAME} -C "${BIN_DIR}" --strip-components=1 2>/dev/null || \
-  tar -xf /data/install/${PKG_NAME} -C "${BIN_DIR}" --strip-components=1
+PKG_FILE="/data/install/${PKG_NAME}"
+
+if [[ -z "${PKG_NAME}" ]]; then
+  echo "pkg_name is empty, cannot extract DTS package" >&2
+  exit 1
 fi
-chmod +x "${BIN_DIR}/dm-master" 2>/dev/null || true
+if [[ ! -f "${PKG_FILE}" ]]; then
+  echo "DTS package not found: ${PKG_FILE}" >&2
+  ls -la /data/install/ || true
+  exit 1
+fi
+
+mkdir -p "${BIN_DIR}" "${CONF_DIR}" "${LOG_DIR}"
+if ! tar -zxf "${PKG_FILE}" -C "${BIN_DIR}" --strip-components=1 2>/dev/null; then
+  tar -xf "${PKG_FILE}" -C "${BIN_DIR}" --strip-components=1
+fi
+if [[ ! -x "${BIN_DIR}/dm-master" && ! -f "${BIN_DIR}/dm-master" ]]; then
+  echo "dm-master binary missing after extract, BIN_DIR contents:" >&2
+  ls -la "${BIN_DIR}" || true
+  exit 1
+fi
+chmod +x "${BIN_DIR}/dm-master"
+
 setsid "${BIN_DIR}/dm-master" -config "${CONF_DIR}/{{config_file}}" \
   > "${LOG_DIR}/{{node_name}}.output" 2>&1 &
+sleep 2
+if ! pgrep -f "${BIN_DIR}/dm-master" >/dev/null 2>&1; then
+  echo "dm-master failed to start, output:" >&2
+  cat "${LOG_DIR}/{{node_name}}.output" >&2 || true
+  exit 1
+fi
 echo "started dm-master {{node_name}}"
 """
 
@@ -33,14 +56,37 @@ PKG_NAME="{{pkg_name}}"
 BIN_DIR="${DEPLOY_PATH}/bin"
 CONF_DIR="${DEPLOY_PATH}/conf"
 LOG_DIR="${DEPLOY_PATH}/log"
-mkdir -p "${BIN_DIR}" "${CONF_DIR}" "${LOG_DIR}"
-if [[ -f /data/install/${PKG_NAME} ]]; then
-  tar -zxf /data/install/${PKG_NAME} -C "${BIN_DIR}" --strip-components=1 2>/dev/null || \
-  tar -xf /data/install/${PKG_NAME} -C "${BIN_DIR}" --strip-components=1
+PKG_FILE="/data/install/${PKG_NAME}"
+
+if [[ -z "${PKG_NAME}" ]]; then
+  echo "pkg_name is empty, cannot extract DTS package" >&2
+  exit 1
 fi
-chmod +x "${BIN_DIR}/dm-worker" 2>/dev/null || true
+if [[ ! -f "${PKG_FILE}" ]]; then
+  echo "DTS package not found: ${PKG_FILE}" >&2
+  ls -la /data/install/ || true
+  exit 1
+fi
+
+mkdir -p "${BIN_DIR}" "${CONF_DIR}" "${LOG_DIR}"
+if ! tar -zxf "${PKG_FILE}" -C "${BIN_DIR}" --strip-components=1 2>/dev/null; then
+  tar -xf "${PKG_FILE}" -C "${BIN_DIR}" --strip-components=1
+fi
+if [[ ! -x "${BIN_DIR}/dm-worker" && ! -f "${BIN_DIR}/dm-worker" ]]; then
+  echo "dm-worker binary missing after extract, BIN_DIR contents:" >&2
+  ls -la "${BIN_DIR}" || true
+  exit 1
+fi
+chmod +x "${BIN_DIR}/dm-worker"
+
 setsid "${BIN_DIR}/dm-worker" -config "${CONF_DIR}/{{config_file}}" \
   > "${LOG_DIR}/{{node_name}}.output" 2>&1 &
+sleep 2
+if ! pgrep -f "${BIN_DIR}/dm-worker" >/dev/null 2>&1; then
+  echo "dm-worker failed to start, output:" >&2
+  cat "${LOG_DIR}/{{node_name}}.output" >&2 || true
+  exit 1
+fi
 echo "started dm-worker {{node_name}}"
 """
 

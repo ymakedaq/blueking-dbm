@@ -15,6 +15,7 @@ from jinja2.sandbox import SandboxedEnvironment as Environment
 from pipeline.component_framework.component import Component
 
 from backend.flow.plugins.components.collections.mysql.dts.base_shell import MysqlDtsExecShellService
+from backend.flow.utils.mysql.dts.package_resolver import resolve_dts_pkg_name
 from backend.flow.utils.mysql.dts.script_template import start_mysql_dts_worker_template
 
 logger = logging.getLogger("flow")
@@ -27,7 +28,10 @@ class MysqlDtsStartWorkerService(MysqlDtsExecShellService):
     def _execute(self, data, parent_data) -> bool:
         kwargs = data.get_one_of_inputs("kwargs")
         trans_data = data.get_one_of_inputs("trans_data")
-        pkg_name = kwargs.get("pkg_name") or getattr(trans_data.deploy_context, "pkg_name", "")
+        pkg_name = resolve_dts_pkg_name(kwargs, trans_data)
+        if not pkg_name:
+            self.log_error(_("无法解析 DTS 介质包名，拒绝启动 Worker"))
+            return False
 
         shell_script = env.from_string(start_mysql_dts_worker_template).render(
             deploy_path=kwargs["deploy_path"],
@@ -36,7 +40,7 @@ class MysqlDtsStartWorkerService(MysqlDtsExecShellService):
             node_name=kwargs["node_name"],
         )
         kwargs["shell_script"] = shell_script
-        self.log_info(_("启动 dm-worker {}").format(kwargs["node_name"]))
+        self.log_info(_("启动 dm-worker {}，介质包={}").format(kwargs["node_name"], pkg_name))
         return super()._execute(data, parent_data)
 
 

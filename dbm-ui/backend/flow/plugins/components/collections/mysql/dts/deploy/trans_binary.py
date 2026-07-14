@@ -45,6 +45,10 @@ class MysqlDtsTransBinaryService(TransFileService):
             trans_data.deploy_context.pkg_name = pkg_name
             if pkg.db_version:
                 trans_data.deploy_context.dts_version = pkg.db_version.full_version
+            # 必须写入 outputs，否则下一节点拿不到 pkg_name（schedule 成功路径不会回写 trans_data）
+            data.outputs["trans_data"] = trans_data
+
+        self.log_info(_("DTS 介质包: name={}, path={}").format(pkg_name, pkg.path))
 
         root_id = kwargs["root_id"]
         node_id = kwargs["node_id"]
@@ -53,6 +57,17 @@ class MysqlDtsTransBinaryService(TransFileService):
         result = super()._execute(data, parent_data)
         if result:
             data.outputs.exec_ips = [{"ip": t["ip"], "bk_cloud_id": t["bk_cloud_id"]} for t in exec_targets]
+            # TransFile 父类 execute/schedule 可能覆盖 outputs，再次确保 pkg_name 落盘
+            if trans_data is not None and hasattr(trans_data, "deploy_context"):
+                data.outputs["trans_data"] = trans_data
+        return result
+
+    def _schedule(self, data, parent_data, callback_data=None) -> bool:
+        # 先取出 execute 阶段写入的 pkg_name，避免父类 schedule 成功路径不回写 trans_data
+        trans_data = data.get_one_of_outputs("trans_data") or data.get_one_of_inputs("trans_data")
+        result = super()._schedule(data, parent_data, callback_data)
+        if result and trans_data is not None and hasattr(trans_data, "deploy_context"):
+            data.outputs["trans_data"] = trans_data
         return result
 
 

@@ -9,6 +9,7 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 """
 import logging
+import os
 from typing import Optional
 
 from django.utils.translation import gettext as _
@@ -86,7 +87,21 @@ def resolve_mysql_dts_package(
 
 
 def build_mysql_dts_bkrepo_paths(pkg: Package) -> tuple[list[str], str]:
+    # Job 下发到目标机后，文件名取 path 最后一段，须与启动脚本 /data/install/${PKG_NAME} 一致
+    pkg_file_name = os.path.basename(pkg.path.rstrip("/")) or pkg.name
     return (
         [f"{env.BKREPO_PROJECT}/{env.BKREPO_BUCKET}/{pkg.path}"],
-        pkg.name,
+        pkg_file_name,
     )
+
+
+def resolve_dts_pkg_name(kwargs: dict | None = None, trans_data=None, pkg_id: int | None = None) -> str:
+    """解析目标机 /data/install 下的介质文件名。"""
+    kwargs = kwargs or {}
+    pkg_name = kwargs.get("pkg_name") or ""
+    if not pkg_name and trans_data is not None and hasattr(trans_data, "deploy_context"):
+        pkg_name = getattr(trans_data.deploy_context, "pkg_name", "") or ""
+    if not pkg_name:
+        pkg = resolve_mysql_dts_package(pkg_id=pkg_id if pkg_id is not None else kwargs.get("dts_pkg_id"))
+        pkg_name = build_mysql_dts_bkrepo_paths(pkg)[1]
+    return pkg_name
