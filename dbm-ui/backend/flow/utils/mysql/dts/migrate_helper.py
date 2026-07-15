@@ -8,8 +8,11 @@ Unless required by applicable law or agreed to in writing, software distributed 
 an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 """
+import logging
+
 from django.utils.translation import gettext as _
 
+from backend.components.db_remote_service.client import DRSApi
 from backend.components.mysqldtsapi.types import (
     BinlogFilterRuleEntry,
     CreateSourceRequest,
@@ -35,6 +38,8 @@ from backend.flow.utils.mysql.dts.constants import MigrateType
 from backend.flow.utils.mysql.dts.migrate_credentials import DtsGrantTarget
 from backend.flow.utils.mysql.dts.migrate_plan import DtsMigratePlan, DtsTaskSpec, SourceSpec, SyncScope
 
+logger = logging.getLogger("flow")
+
 
 def resolve_source_endpoint(source_spec: SourceSpec, cluster: Cluster) -> tuple[str, int]:
     if source_spec.source_host:
@@ -48,6 +53,17 @@ def resolve_source_endpoint(source_spec: SourceSpec, cluster: Cluster) -> tuple[
     if source_spec.source_instance_role:
         ins = cluster.storageinstance_set.get(instance_role=source_spec.source_instance_role)
         return ins.machine.ip, ins.port
+
+    # TenDBCluster：Source 必须落在 Remote 存储节点，不能用 Spider 代理探测/拉 binlog
+    if cluster.cluster_type == ClusterType.TenDBCluster.value:
+        slave_qs = cluster.storageinstance_set.filter(instance_role=InstanceRole.REMOTE_SLAVE)
+        ins = slave_qs.filter(is_stand_by=True).first() or slave_qs.first()
+        if not ins:
+            ins = cluster.storageinstance_set.filter(instance_role=InstanceRole.REMOTE_MASTER).first()
+        if not ins:
+            raise ValueError(_("集群 {} 未找到可用的 Remote 源实例").format(cluster.id))
+        return ins.machine.ip, ins.port
+
     slave_qs = cluster.storageinstance_set.filter(instance_role=InstanceRole.BACKEND_SLAVE)
     if slave_qs.filter(is_stand_by=True).exists():
         ins = slave_qs.filter(is_stand_by=True).first()
@@ -193,6 +209,113 @@ def _build_binlog_filter_rules(sync_scope: SyncScope) -> dict[str, BinlogFilterR
     return rules
 
 
+def probe_instance_gtid_enabled(*, host: str, port: int, bk_cloud_id: int) -> bool:
+    """探测单个 MySQL 实例 gtid_mode 是否为 ON。
+
+    低版本无该变量 / DRS 失败 → False。
+    """
+    address = "{}{}{}".format(host, IP_PORT_DIVIDER, port)
+    try:
+        resp = DRSApi.rpc(
+            {
+                "addresses": [address],
+                "cmds": ["SHOW GLOBAL VARIABLES LIKE 'gtid_mode';"],
+                "force": False,
+                "bk_cloud_id": bk_cloud_id,
+            }
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(_("探测实例 {} GTID 失败: {}").format(address, exc))
+        return False
+
+    if not resp:
+        logger.warning(_("探测实例 {} GTID 返回为空").format(address))
+        return False
+
+    top_err = resp[0].get("error_msg") or ""
+    cmd_results = resp[0].get("cmd_results") or []
+    if top_err or not cmd_results:
+        logger.warning(_("探测实例 {} GTID 失败: {}").format(address, top_err or _("无结果")))
+        return False
+
+    cmd_err = cmd_results[0].get("error_msg") or ""
+    if cmd_err:
+        logger.warning(_("探测实例 {} GTID 失败: {}").format(address, cmd_err))
+        return False
+
+    gtid_mode = ""
+    for row in cmd_results[0].get("table_data") or []:
+        if str(row.get("Variable_name", "")).lower() == "gtid_mode":
+            gtid_mode = str(row.get("Value") or "").strip()
+            break
+
+    enabled = gtid_mode.upper() == "ON"
+    logger.info(_("实例 {} gtid_mode={}").format(address, gtid_mode or _("无")))
+    return enabled
+
+
+# 兼容旧名
+probe_source_enable_gtid = probe_instance_gtid_enabled
+
+
+def _collect_target_gtid_probe_endpoints(cluster: Cluster, migrate_type: str) -> list[tuple[str, int, int]]:
+    """收集目标侧用于 GTID 探测的真实 MySQL 存储端点。
+
+    TenDBCluster 不探测 Spider（代理上 gtid_mode 不可靠），只探测 RemoteDB。
+    """
+    bk_cloud_id = cluster.bk_cloud_id
+    endpoints: list[tuple[str, int, int]] = []
+    if migrate_type == MigrateType.HA_TO_CLUSTER.value or cluster.cluster_type == ClusterType.TenDBCluster.value:
+        for storage in cluster.storageinstance_set.filter(instance_role=InstanceRole.REMOTE_MASTER):
+            endpoints.append((storage.machine.ip, storage.port, bk_cloud_id))
+        if not endpoints:
+            logger.warning(_("目标集群 {} 未找到 Remote Master，跳过目标 GTID 探测").format(cluster.id))
+        return endpoints
+
+    master = cluster.storageinstance_set.filter(instance_role=InstanceRole.BACKEND_MASTER).first()
+    if master:
+        endpoints.append((master.machine.ip, master.port, bk_cloud_id))
+    return endpoints
+
+
+def decide_enable_gtid(
+    *,
+    source_host: str,
+    source_port: int,
+    source_cluster: Cluster,
+    target_cluster: Cluster | None,
+    migrate_type: str = "",
+) -> bool:
+    """跨版本/跨架构迁移时决定 Source.enable_gtid。
+
+    DTS 的 enable_gtid 作用在读源 binlog；但跨版本场景下若目标无 GTID、源开 GTID，
+    仍建议走 binlog 位点，避免后续运维/校验假设不一致。
+
+    规则：源端 + 目标侧所有探测点均为 gtid_mode=ON 才返回 True；任一端 OFF/探测失败 → False。
+    """
+    source_ok = probe_instance_gtid_enabled(host=source_host, port=source_port, bk_cloud_id=source_cluster.bk_cloud_id)
+    if not source_ok:
+        logger.info(_("源端 {}:{} 未开启 GTID，enable_gtid=False").format(source_host, source_port))
+        return False
+
+    if not target_cluster:
+        logger.warning(_("未传入目标集群，仅源端开启 GTID，为安全起见 enable_gtid=False"))
+        return False
+
+    target_eps = _collect_target_gtid_probe_endpoints(target_cluster, migrate_type)
+    if not target_eps:
+        logger.warning(_("目标集群 {} 无可用 GTID 探测点，enable_gtid=False").format(target_cluster.id))
+        return False
+
+    for host, port, bk_cloud_id in target_eps:
+        if not probe_instance_gtid_enabled(host=host, port=port, bk_cloud_id=bk_cloud_id):
+            logger.info(_("目标端 {}:{} 未开启 GTID（跨版本/混部），enable_gtid=False").format(host, port))
+            return False
+
+    logger.info(_("源/目标均已开启 GTID（目标探测点 {} 个），enable_gtid=True").format(len(target_eps)))
+    return True
+
+
 def build_create_source_request(
     source_spec: SourceSpec,
     cluster: Cluster,
@@ -200,18 +323,28 @@ def build_create_source_request(
     user: str,
     password: str,
     worker_name: str | None = None,
+    target_cluster: Cluster | None = None,
+    migrate_type: str = "",
 ) -> CreateSourceRequest:
     host, port = resolve_source_endpoint(source_spec, cluster)
     cluster_type = "mysql"
+    # Source.cluster_type=spider 表示上游是 Spider 分片语义；实际连接点仍是 Remote 存储
     if cluster.cluster_type == ClusterType.TenDBCluster.value:
         cluster_type = "spider"
+    enable_gtid = decide_enable_gtid(
+        source_host=host,
+        source_port=port,
+        source_cluster=cluster,
+        target_cluster=target_cluster,
+        migrate_type=migrate_type,
+    )
     source = Source(
         source_name=source_spec.source_name,
         host=host,
         port=port,
         user=user,
         password=password,
-        enable_gtid=True,
+        enable_gtid=enable_gtid,
         enable=True,
         cluster_type=cluster_type,
     )
@@ -306,6 +439,10 @@ def build_dts_task_request(
     for src in task_spec.sources:
         table_rules.extend(_build_table_migrate_rules(src.source_name, src.sync_scope))
         binlog_filters.update(_build_binlog_filter_rules(src.sync_scope))
+
+    if not table_rules:
+        # 引擎侧空 table_migrate_rule 等价于全库迁移，与「空 sync_scope=不同步」语义冲突，必须拦截
+        raise ValueError(_("同步范围为空，拒绝创建 DTS 任务（空 table_migrate_rule 在引擎侧等价于全库迁移）"))
 
     target_cfg = task_spec.target_config
     if not target_cfg or not target_cfg.host:

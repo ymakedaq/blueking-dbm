@@ -46,6 +46,8 @@ def mysql_dts_migrate_task_subflow(
         kwargs={
             "master_addr": master_addr,
             "task_spec": task_spec,
+            "migrate_plan": migrate_plan,
+            "migrate_type": migrate_plan.migrate_type,
         },
     )
     sub.add_act(

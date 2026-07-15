@@ -41,6 +41,11 @@ class MysqlDtsRegisterSourceService(BaseService):
         worker_name = kwargs.get("worker_name")
 
         registered = []
+        target_cluster = Cluster.objects.get(id=task_spec.target_cluster_id)
+        migrate_type = kwargs.get("migrate_type") or ""
+        if not migrate_type and kwargs.get("migrate_plan") is not None:
+            migrate_type = getattr(kwargs["migrate_plan"], "migrate_type", "") or ""
+
         for source_spec in task_spec.sources:
             cluster = Cluster.objects.get(id=source_spec.cluster_id)
             request = build_create_source_request(
@@ -49,6 +54,16 @@ class MysqlDtsRegisterSourceService(BaseService):
                 user=dts_user,
                 password=dts_password,
                 worker_name=worker_name,
+                target_cluster=target_cluster,
+                migrate_type=migrate_type,
+            )
+            self.log_info(
+                _("注册 Source {} enable_gtid={} (源集群={}, 目标集群={})").format(
+                    source_spec.source_name,
+                    request.source.enable_gtid,
+                    cluster.id,
+                    target_cluster.id,
+                )
             )
             resp = MySQLDTSApi.create_source(master_addr, request)
             source_name = resp.source_name or source_spec.source_name

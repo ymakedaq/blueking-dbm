@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from unittest.mock import patch
+
 from django.test import SimpleTestCase
 
 from backend.flow.utils.mysql.dts.constants import (
@@ -63,6 +65,120 @@ class MigratePlanTest(SimpleTestCase):
 
 
 class SyncScopeMappingTest(SimpleTestCase):
+    """L1：S1–S7 sync_scope → table_migrate_rule 映射验收。"""
+
+    def _dump_rules(self, scenario_id: str, scope: SyncScope, rules):
+        payload = [
+            {
+                "source": r.source.model_dump(),
+                "target": r.target.model_dump() if r.target else None,
+            }
+            for r in rules
+        ]
+        print(f"[DTS-UT][{scenario_id}] RULES {payload}")
+
+    def test_s1_do_dbs_partial_database(self):
+        scope = SyncScope(do_dbs=["dts_ut_db_a", "dts_ut_db_b"])
+        rules = _build_table_migrate_rules("src-ut", scope)
+        self._dump_rules("S1", scope, rules)
+        self.assertEqual(len(rules), 2)
+        self.assertEqual({r.source.schema for r in rules}, {"dts_ut_db_a", "dts_ut_db_b"})
+        self.assertTrue(all(r.source.table == "*" for r in rules))
+
+    def test_s2_do_tables_partial_table(self):
+        scope = SyncScope(do_tables=[{"db": "dts_ut_db_c", "table": "t1"}])
+        rules = _build_table_migrate_rules("src-ut", scope)
+        self._dump_rules("S2", scope, rules)
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].source.schema, "dts_ut_db_c")
+        self.assertEqual(rules[0].source.table, "t1")
+
+    def test_s3_full_db_wildcard_route(self):
+        scope = SyncScope(
+            table_routes=[{"source_db": "dts_ut_db_full", "source_table": "*"}],
+        )
+        rules = _build_table_migrate_rules("src-ut", scope)
+        self._dump_rules("S3", scope, rules)
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].source.schema, "dts_ut_db_full")
+        self.assertEqual(rules[0].source.table, "*")
+
+    def test_s4_rename_table(self):
+        scope = SyncScope(
+            table_routes=[
+                {
+                    "source_db": "dts_ut_db_r",
+                    "source_table": "t_old",
+                    "target_db": "dts_ut_db_r",
+                    "target_table": "t_new",
+                }
+            ],
+        )
+        rules = _build_table_migrate_rules("src-ut", scope)
+        self._dump_rules("S4", scope, rules)
+        self.assertEqual(len(rules), 1)
+        self.assertIsNotNone(rules[0].target)
+        self.assertEqual(rules[0].target.schema, "dts_ut_db_r")
+        self.assertEqual(rules[0].target.table, "t_new")
+
+    def test_s5_rename_database(self):
+        scope = SyncScope(
+            table_routes=[
+                {
+                    "source_db": "dts_ut_src",
+                    "source_table": "t1",
+                    "target_db": "dts_ut_dst",
+                    "target_table": "t1",
+                }
+            ],
+        )
+        rules = _build_table_migrate_rules("src-ut", scope)
+        self._dump_rules("S5", scope, rules)
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].source.schema, "dts_ut_src")
+        self.assertEqual(rules[0].target.schema, "dts_ut_dst")
+
+    def test_s6_ignore_dbs_whitelist_subtract(self):
+        scope = SyncScope(do_dbs=["dts_ut_db_a", "dts_ut_db_b"], ignore_dbs=["dts_ut_db_b"])
+        rules = _build_table_migrate_rules("src-ut", scope)
+        self._dump_rules("S6", scope, rules)
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].source.schema, "dts_ut_db_a")
+
+    def test_s7_empty_scope_yields_no_rules(self):
+        scope = SyncScope()
+        rules = _build_table_migrate_rules("src-ut", scope)
+        self._dump_rules("S7", scope, rules)
+        self.assertEqual(rules, [])
+
+    def test_build_task_rejects_empty_rules(self):
+        from backend.components.mysqldtsapi.types import TargetConfig
+        from backend.flow.utils.mysql.dts.constants import DtsLifecycleMode, MigrateTopology, MigrateType
+        from backend.flow.utils.mysql.dts.migrate_helper import build_dts_task_request
+        from backend.flow.utils.mysql.dts.migrate_plan import DtsMigratePlan, DtsTaskConfig, DtsTaskSpec, SourceSpec
+
+        plan = DtsMigratePlan(
+            topology=MigrateTopology.ONE_TO_ONE.value,
+            migrate_type=MigrateType.HA_TO_HA.value,
+            dts_cluster_id=None,
+            dts_lifecycle=DtsLifecycleMode.USE_EXISTING.value,
+            auto_deploy_dts=False,
+            deploy_subflow_inp=None,
+            cleanup_after_migrate=False,
+            recycle_dts_hosts=False,
+            dts_task_config=DtsTaskConfig(),
+            task_specs=[],
+            worker_count_required=1,
+        )
+        task_spec = DtsTaskSpec(
+            task_name="reject-empty",
+            target_cluster_id=0,
+            sources=[SourceSpec(cluster_id=0, source_name="src-1", sync_scope=SyncScope())],
+            target_config=TargetConfig(host="127.0.0.1", port=3306, user="u", password="p", cluster_type="mysql"),
+        )
+        with self.assertRaises(ValueError):
+            build_dts_task_request(plan, task_spec, user="u", password="p")
+
     def test_do_dbs_to_table_migrate_rules(self):
         scope = SyncScope(do_dbs=["db_a", "db_b"], ignore_dbs=["db_b"])
         rules = _build_table_migrate_rules("src-1", scope)
@@ -79,6 +195,120 @@ class SyncScopeMappingTest(SimpleTestCase):
         rules = _build_table_migrate_rules("src-1", scope)
         self.assertEqual(len(rules), 1)
         self.assertEqual(rules[0].source.schema, "db_x")
+
+
+class ProbeSourceEnableGtidTest(SimpleTestCase):
+    """探测源/目标 gtid_mode → enable_gtid（双方都 ON 才开）。"""
+
+    @staticmethod
+    def _rpc_resp(value: str | None, *, error: str = ""):
+        rows = []
+        if value is not None:
+            rows = [{"Variable_name": "gtid_mode", "Value": value}]
+        return [
+            {
+                "error_msg": error,
+                "cmd_results": [{"error_msg": "", "table_data": rows}] if not error else [],
+            }
+        ]
+
+    @patch("backend.flow.utils.mysql.dts.migrate_helper.DRSApi.rpc")
+    def test_gtid_on(self, mock_rpc):
+        from backend.flow.utils.mysql.dts.migrate_helper import probe_instance_gtid_enabled
+
+        mock_rpc.return_value = self._rpc_resp("ON")
+        self.assertTrue(probe_instance_gtid_enabled(host="127.0.0.1", port=3306, bk_cloud_id=0))
+
+    @patch("backend.flow.utils.mysql.dts.migrate_helper.DRSApi.rpc")
+    def test_gtid_off(self, mock_rpc):
+        from backend.flow.utils.mysql.dts.migrate_helper import probe_instance_gtid_enabled
+
+        mock_rpc.return_value = self._rpc_resp("OFF")
+        self.assertFalse(probe_instance_gtid_enabled(host="127.0.0.1", port=3306, bk_cloud_id=0))
+
+    @patch("backend.flow.utils.mysql.dts.migrate_helper.DRSApi.rpc")
+    def test_gtid_variable_missing(self, mock_rpc):
+        from backend.flow.utils.mysql.dts.migrate_helper import probe_instance_gtid_enabled
+
+        mock_rpc.return_value = self._rpc_resp(None)
+        self.assertFalse(probe_instance_gtid_enabled(host="127.0.0.1", port=3306, bk_cloud_id=0))
+
+    @patch("backend.flow.utils.mysql.dts.migrate_helper.DRSApi.rpc")
+    def test_gtid_probe_exception_defaults_false(self, mock_rpc):
+        from backend.flow.utils.mysql.dts.migrate_helper import probe_instance_gtid_enabled
+
+        mock_rpc.side_effect = RuntimeError("drs down")
+        self.assertFalse(probe_instance_gtid_enabled(host="127.0.0.1", port=3306, bk_cloud_id=0))
+
+    @patch("backend.flow.utils.mysql.dts.migrate_helper.probe_instance_gtid_enabled")
+    def test_decide_requires_source_and_target_both_on(self, mock_probe):
+        from types import SimpleNamespace
+
+        from backend.flow.utils.mysql.dts.migrate_helper import decide_enable_gtid
+
+        # source ON, first target ON, second target OFF → False
+        mock_probe.side_effect = [True, True, False]
+        source_cluster = SimpleNamespace(id=1, bk_cloud_id=0)
+        target_cluster = SimpleNamespace(id=2, bk_cloud_id=0, cluster_type="tendbha")
+        master = SimpleNamespace(machine=SimpleNamespace(ip="127.0.0.2"), port=3306)
+        target_cluster.storageinstance_set = SimpleNamespace(
+            filter=lambda **kwargs: SimpleNamespace(first=lambda: master)
+        )
+
+        with patch(
+            "backend.flow.utils.mysql.dts.migrate_helper._collect_target_gtid_probe_endpoints",
+            return_value=[("127.0.0.2", 3306, 0), ("127.0.0.3", 3306, 0)],
+        ):
+            self.assertFalse(
+                decide_enable_gtid(
+                    source_host="127.0.0.1",
+                    source_port=3306,
+                    source_cluster=source_cluster,
+                    target_cluster=target_cluster,
+                    migrate_type="ha_to_ha",
+                )
+            )
+
+    @patch("backend.flow.utils.mysql.dts.migrate_helper.probe_instance_gtid_enabled")
+    def test_decide_both_on(self, mock_probe):
+        from types import SimpleNamespace
+
+        from backend.flow.utils.mysql.dts.migrate_helper import decide_enable_gtid
+
+        mock_probe.return_value = True
+        source_cluster = SimpleNamespace(id=1, bk_cloud_id=0)
+        target_cluster = SimpleNamespace(id=2, bk_cloud_id=0)
+        with patch(
+            "backend.flow.utils.mysql.dts.migrate_helper._collect_target_gtid_probe_endpoints",
+            return_value=[("127.0.0.2", 3306, 0)],
+        ):
+            self.assertTrue(
+                decide_enable_gtid(
+                    source_host="127.0.0.1",
+                    source_port=3306,
+                    source_cluster=source_cluster,
+                    target_cluster=target_cluster,
+                    migrate_type="ha_to_ha",
+                )
+            )
+
+    @patch("backend.flow.utils.mysql.dts.migrate_helper.probe_instance_gtid_enabled")
+    def test_decide_no_target_cluster_false(self, mock_probe):
+        from types import SimpleNamespace
+
+        from backend.flow.utils.mysql.dts.migrate_helper import decide_enable_gtid
+
+        mock_probe.return_value = True
+        source_cluster = SimpleNamespace(id=1, bk_cloud_id=0)
+        self.assertFalse(
+            decide_enable_gtid(
+                source_host="127.0.0.1",
+                source_port=3306,
+                source_cluster=source_cluster,
+                target_cluster=None,
+                migrate_type="ha_to_ha",
+            )
+        )
 
 
 class MigrateCredentialsTest(SimpleTestCase):
