@@ -528,3 +528,106 @@ class AdaptTLinux4DependenciesComponent(Component):
     name = __name__
     code = "adapt_tlinux4_dependencies"
     bound_service = AdaptTLinux4DependenciesSvr
+
+
+# 兼容说明：以 /proc/mounts 为准，不依赖 df -T / findmnt 等发行版差异命令
+check_disk_filesystem_script = """
+#!/bin/bash
+# 兼容说明：以 /proc/mounts 为准，不依赖 df -T / findmnt 等发行版差异命令
+
+echo "==== OS / version info ===="
+echo "CMD: uname -a"
+uname -a 2>/dev/null || true
+
+if [ -f /etc/os-release ]; then
+  echo "CMD: grep -E '^(ID|VERSION_ID|PRETTY_NAME)=' /etc/os-release"
+  grep -E '^(ID|VERSION_ID|PRETTY_NAME)=' /etc/os-release 2>/dev/null || true
+else
+  echo "WARN: /etc/os-release not found"
+fi
+
+echo "==== filesystem check (source=/proc/mounts) ===="
+echo "CMD: awk '{print \\$1,\\$2,\\$3}' /proc/mounts"
+
+if [ ! -r /proc/mounts ]; then
+  echo "ERROR: /proc/mounts not readable"
+  exit 1
+fi
+
+found_data_mount=0
+fail=0
+
+# /proc/mounts: device mountpoint fstype options dump pass
+# 例: /dev/vdb1 /data1 ext4 rw,relatime 0 0
+while read -r device mount fstype _rest; do
+  [ -z "${mount:-}" ] && continue
+
+  # 只认精确挂载点 /data、/dataN，排除 /data/xxx
+  echo "$mount" | grep -Eq '^/data[0-9]*$' || continue
+
+  found_data_mount=1
+  fstype_l=$(echo "$fstype" | tr 'A-Z' 'a-z')
+  echo "RESULT: mount=${mount} fstype=${fstype_l} device=${device}"
+
+  if [ "$fstype_l" = "ext3" ]; then
+    echo "ERROR: mount point ${mount} filesystem is ext3, not allowed"
+    echo "ERROR: please MakeFS to EXT4 or XFS, then retry"
+    fail=1
+  fi
+done < /proc/mounts
+
+if [ "$found_data_mount" -eq 0 ]; then
+  echo "WARN: no /data* mount point found in /proc/mounts, skip ext3 check"
+  exit 0
+fi
+
+if [ "$fail" -eq 1 ]; then
+  echo "filesystem check failed: ext3 is not allowed on /data*"
+  echo "please MakeFS to EXT4 or XFS, then retry"
+  exit 1
+fi
+
+echo "filesystem check passed"
+exit 0
+"""  # noqa
+
+
+class CheckDiskFilesystem(BkJobService):
+    def _execute(self, data, parent_data) -> bool:
+        kwargs = data.get_one_of_inputs("kwargs")
+        exec_ips = self.splice_exec_ips_list(ticket_ips=kwargs["exec_ip"])
+        if not exec_ips:
+            self.log_error("No execution IPs found")
+            return False
+
+        target_ip_info = [{"bk_cloud_id": kwargs["bk_cloud_id"], "ip": ip} for ip in exec_ips]
+        body = {
+            "bk_scope_type": "biz_set",
+            "bk_scope_id": env.JOB_BLUEKING_BIZ_ID,
+            "task_name": "DBM-Check-Disk-Filesystem",
+            "script_content": base64_encode(check_disk_filesystem_script),
+            "script_language": 1,
+            "target_server": {"ip_list": target_ip_info},
+        }
+        self.log_info("ready start task with body {}".format(body))
+
+        common_kwargs = copy.deepcopy(fast_execute_script_common_kwargs)
+        common_kwargs["account_alias"] = DBA_ROOT_USER
+        resp = JobApi.fast_execute_script({**common_kwargs, **body}, raw=True)
+        self.log_info(f"fast execute script response: {resp}")
+
+        if not resp.get("result") or not resp.get("data") or not resp["data"].get("job_instance_id"):
+            self.log_error(f"Failed to execute script: {resp}")
+            return False
+
+        self.log_info(f"job url: {self.__url__(resp['data']['job_instance_id'])}")
+        data.outputs.ext_result = resp
+        # BkJobService._schedule 需要 dict 列表（含 ip + bk_cloud_id）
+        data.outputs.exec_ips = target_ip_info
+        return True
+
+
+class CheckDiskFilesystemComponent(Component):
+    name = __name__
+    code = "check_disk_filesystem"
+    bound_service = CheckDiskFilesystem

@@ -41,6 +41,7 @@ from backend.flow.plugins.components.collections.mysql.mysql_check_variable_cons
 from backend.flow.plugins.components.collections.mysql.mysql_db_meta import MySQLDBMetaComponent
 from backend.flow.plugins.components.collections.mysql.mysql_os_init import (
     AdaptTLinux4DependenciesComponent,
+    CheckDiskFilesystemComponent,
     GetOsSysParamComponent,
     MySQLOsInitComponent,
     SysInitComponent,
@@ -51,6 +52,7 @@ from backend.flow.utils.common_act_dataclass import InitCheckKwargs
 from backend.flow.utils.mysql.mysql_act_dataclass import (
     AuthorizeKwargs,
     CheckClientConnKwargs,
+    CheckDiskFilesystemKwargs,
     CheckSlavesDelayKwargs,
     CloneRuleKwargs,
     DBMetaOPKwargs,
@@ -451,6 +453,7 @@ def init_machine_sub_flow(
     init_check_ips: list = None,
     yum_install_perl_ips: list = None,
     bk_host_ids: List[int] = None,
+    check_fs_ips: list = None,
 ):
     """
     定义初始化机器的公共子流程，提供给mysql/spider/proxy新机器的初始化适用，不支持跨云区域处理
@@ -461,6 +464,7 @@ def init_machine_sub_flow(
     @param init_check_ips: 需要做空闲检查的机器ip列表
     @param yum_install_perl_ips:需要按照perl环境的机器ip列表
     @param bk_host_ids: List[int] 操作的主机
+    @param check_fs_ips: 需要检查文件系统格式（禁止ext3）的机器ip列表，仅MySQL存储节点
     """
     if not sys_init_ips and not init_check_ips and not yum_install_perl_ips:
         raise Exception(
@@ -474,6 +478,14 @@ def init_machine_sub_flow(
             act_name=_("空闲检查[{}]".format(init_check_ips)),
             act_component_code=CheckMachineIdleComponent.code,
             kwargs=asdict(InitCheckKwargs(ips=init_check_ips, bk_cloud_id=bk_cloud_id)),
+        )
+
+    # 检查文件系统格式（禁止ext3），仅对传入的存储节点IP执行
+    if check_fs_ips:
+        sub_pipeline.add_act(
+            act_name=_("检查文件系统格式[{}]".format(check_fs_ips)),
+            act_component_code=CheckDiskFilesystemComponent.code,
+            kwargs=asdict(CheckDiskFilesystemKwargs(exec_ip=check_fs_ips, bk_cloud_id=bk_cloud_id)),
         )
 
     # 初始化机器

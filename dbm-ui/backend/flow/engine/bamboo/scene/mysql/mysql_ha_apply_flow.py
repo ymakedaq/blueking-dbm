@@ -138,6 +138,7 @@ class MySQLHAApplyFlow(object):
                     init_check_ips=[ip_info["ip"] for ip_info in info["mysql_ip_list"] + info["proxy_ip_list"]],
                     yum_install_perl_ips=[ip_info["ip"] for ip_info in info["mysql_ip_list"] + info["proxy_ip_list"]],
                     bk_host_ids=bk_host_ids,
+                    check_fs_ips=[ip_info["ip"] for ip_info in info["mysql_ip_list"]],
                 )
             )
 

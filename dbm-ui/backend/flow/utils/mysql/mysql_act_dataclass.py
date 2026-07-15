@@ -542,6 +542,16 @@ class YumInstallPerlKwargs:
     exec_ip: list
 
 
+@dataclass
+class CheckDiskFilesystemKwargs:
+    """
+    定义检查磁盘文件系统格式的私有变量结构体
+    """
+
+    bk_cloud_id: int
+    exec_ip: list
+
+
 @dataclass()
 class IpKwargs:
     """

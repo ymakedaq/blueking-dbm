@@ -139,6 +139,7 @@ class MySQLSingleApplyFlow(object):
                     init_check_ips=[info["new_ip"]["ip"]],
                     yum_install_perl_ips=[info["new_ip"]["ip"]],
                     bk_host_ids=bk_host_ids,
+                    check_fs_ips=[info["new_ip"]["ip"]],
                 )
             )
             sub_pipeline.add_act(

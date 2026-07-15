@@ -213,6 +213,7 @@ class TenDBClusterApplyFlow(object):
                     ip_info["ip"] for ip_info in self.data["mysql_ip_list"] + self.data["spider_ip_list"]
                 ],
                 bk_host_ids=bk_host_ids,
+                check_fs_ips=[ip_info["ip"] for ip_info in self.data["mysql_ip_list"]],
             )
         )
         # 阶段1 并行分发安装文件
@@ -464,6 +465,7 @@ class TenDBClusterApplyFlow(object):
                     ip_info["ip"] for ip_info in self.data["mysql_ip_list"] + self.data["spider_ip_list"]
                 ],
                 bk_host_ids=bk_host_ids,
+                check_fs_ips=[ip_info["ip"] for ip_info in self.data["mysql_ip_list"]],
             )
         )
         # 阶段1 并行分发安装文件
