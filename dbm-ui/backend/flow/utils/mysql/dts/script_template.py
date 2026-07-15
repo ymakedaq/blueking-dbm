@@ -172,8 +172,10 @@ echo "started dm-worker ${DTS_NODE_NAME} (listen ${LISTEN_PORT})"
 
 stop_mysql_dts_process_template = """
 set -euo pipefail
-pkill -f "{{deploy_path}}/bin/dm-master" 2>/dev/null || true
+# 先停 Worker 再停 Master，满足 offline_worker「进程须先离线」约束
 pkill -f "{{deploy_path}}/bin/dm-worker" 2>/dev/null || true
+pkill -f "{{deploy_path}}/bin/dm-master" 2>/dev/null || true
+sleep 1
 echo "stopped dts processes under {{deploy_path}}"
 """
 

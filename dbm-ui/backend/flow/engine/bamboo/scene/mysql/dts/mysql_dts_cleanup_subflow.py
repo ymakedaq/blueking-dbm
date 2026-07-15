@@ -40,6 +40,12 @@ def _collect_cleanup_targets(inp: MysqlDtsCleanupSubflowInput) -> list[DtsHostSp
 def mysql_dts_cleanup_subflow(inp: MysqlDtsCleanupSubflowInput) -> SubBuilder:
     """清理/销毁 DTS 集群。
 
+    顺序约束（与 DTS Master API 一致）：
+    1) 停任务/Source（需 Master 在线）
+    2) 停本机 dm-worker / dm-master 进程（Worker 必须先离线，否则 offline_worker 报 46005）
+    3) 调用 OpenAPI 注销节点注册（Master 可能已停，失败按可忽略处理）
+    4) 清理目录与元数据
+
     ---------------------------------------------------------------------------
     【备忘】临时账号 drop_user 建议挂在此处（DESTROY 路径）
     ---------------------------------------------------------------------------
@@ -80,17 +86,8 @@ def mysql_dts_cleanup_subflow(inp: MysqlDtsCleanupSubflowInput) -> SubBuilder:
         },
     )
     # NOTE【备忘】: 此处可插入 mysql_dts_drop_user_subflow（见上方 docstring）。
-    sub.add_act(
-        act_name=_("下线 DTS 节点注册信息"),
-        act_component_code=MysqlDtsOfflineNodesComponent.code,
-        kwargs={
-            "master_addr": inp.master_addr,
-            "worker_nodes": inp.worker_nodes,
-            "master_nodes": inp.master_nodes,
-            "force_destroy": inp.force_destroy,
-        },
-    )
 
+    # 必须先停进程：Master API offline_worker 要求 Worker 已不在线（否则 46005）
     if exec_targets:
         sub.add_act(
             act_name=_("停止 DTS 进程"),
@@ -100,15 +97,29 @@ def mysql_dts_cleanup_subflow(inp: MysqlDtsCleanupSubflowInput) -> SubBuilder:
                 "deploy_path": inp.deploy_path,
             },
         )
-        if inp.clean_data_dir:
-            sub.add_act(
-                act_name=_("清理 DTS 部署目录"),
-                act_component_code=MysqlDtsCleanDataDirComponent.code,
-                kwargs={
-                    "exec_targets": exec_targets,
-                    "deploy_path": inp.deploy_path,
-                },
-            )
+
+    sub.add_act(
+        act_name=_("下线 DTS 节点注册信息"),
+        act_component_code=MysqlDtsOfflineNodesComponent.code,
+        kwargs={
+            "master_addr": inp.master_addr,
+            "worker_nodes": inp.worker_nodes,
+            "master_nodes": inp.master_nodes,
+            "force_destroy": inp.force_destroy,
+            # 进程已停后 Master 可能不可达，offline API 失败可忽略
+            "ignore_unreachable": True,
+        },
+    )
+
+    if exec_targets and inp.clean_data_dir:
+        sub.add_act(
+            act_name=_("清理 DTS 部署目录"),
+            act_component_code=MysqlDtsCleanDataDirComponent.code,
+            kwargs={
+                "exec_targets": exec_targets,
+                "deploy_path": inp.deploy_path,
+            },
+        )
 
     sub.add_act(
         act_name=_("下线 DTS 集群元数据"),
