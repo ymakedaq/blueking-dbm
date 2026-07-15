@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from backend.db_meta.api.cluster.mysqldts.create_cluster import create
 from backend.db_meta.api.cluster.mysqldts.decommission import decommission
 from backend.db_meta.enums import (
     AccessLayer,
@@ -45,11 +46,12 @@ TEST_BK_CLOUD_ID = 0
 TEST_CLUSTER_NAME = "dts-make-test-01"
 TEST_IMMUTE_DOMAIN = f"{TEST_CLUSTER_NAME}.dts.db"
 TEST_MASTER_ADDR = f"{cc.NORMAL_IP}:{MYSQL_DTS_MASTER_PORT}"
+TEST_DEPLOY_PATH = f"/data/dts/{TEST_CLUSTER_NAME}"
 
 
 @pytest.fixture
-def dts_cluster_meta():
-    """构造一套最小可用的 DTS 集群元数据（Master + Worker 分机）。"""
+def legacy_dts_cluster_meta():
+    """历史模型：仍挂 Cluster / Proxy / Storage / Entry。"""
     bk_city = BKCity.objects.first()
     master_machine = Machine.objects.create(
         ip=cc.NORMAL_IP,
@@ -122,7 +124,7 @@ def dts_cluster_meta():
         master_nodes=[{"ip": cc.NORMAL_IP, "bk_cloud_id": TEST_BK_CLOUD_ID}],
         worker_nodes=[{"ip": cc.NORMAL_IP2, "bk_cloud_id": TEST_BK_CLOUD_ID}],
         master_addr=TEST_MASTER_ADDR,
-        deploy_path=f"/data/dts/{TEST_CLUSTER_NAME}",
+        deploy_path=TEST_DEPLOY_PATH,
     )
     return {
         "cluster": cluster,
@@ -131,20 +133,45 @@ def dts_cluster_meta():
         "storage": storage,
         "master_machine": master_machine,
         "worker_machine": worker_machine,
-        "entry": entry,
     }
 
 
 class TestMysqlDtsDecommission:
+    @patch("backend.db_meta.api.machine.apis.CCApi", cc.CCApiMock())
     @patch("backend.db_meta.api.cluster.mysqldts.decommission.CcManage")
-    def test_decommission_hard_deletes_cluster_and_frees_domain(self, mock_cc_manage, dts_cluster_meta):
+    def test_decommission_slim_model_recycles_machines(self, mock_cc_manage, _cc_api_mock):
         mock_cc_manage.return_value = MagicMock()
-        cluster_id = dts_cluster_meta["cluster"].id
-        dts_id = dts_cluster_meta["dts_cluster"].id
-        proxy_id = dts_cluster_meta["proxy"].id
-        storage_id = dts_cluster_meta["storage"].id
-        master_machine_id = dts_cluster_meta["master_machine"].id
-        worker_machine_id = dts_cluster_meta["worker_machine"].id
+        dts = create(
+            bk_biz_id=constant.BK_BIZ_ID,
+            bk_cloud_id=TEST_BK_CLOUD_ID,
+            name=TEST_CLUSTER_NAME,
+            master_nodes=[{"ip": cc.NORMAL_IP, "bk_cloud_id": TEST_BK_CLOUD_ID, "port": MYSQL_DTS_MASTER_PORT}],
+            worker_nodes=[{"ip": cc.NORMAL_IP2, "bk_cloud_id": TEST_BK_CLOUD_ID, "port": MYSQL_DTS_WORKER_PORT}],
+            master_addr=TEST_MASTER_ADDR,
+            deploy_path=TEST_DEPLOY_PATH,
+            creator="tester",
+        )
+        master_pk = Machine.objects.get(ip=cc.NORMAL_IP, bk_cloud_id=TEST_BK_CLOUD_ID).bk_host_id
+        worker_pk = Machine.objects.get(ip=cc.NORMAL_IP2, bk_cloud_id=TEST_BK_CLOUD_ID).bk_host_id
+
+        decommission(dts_cluster_id=dts.id, recycle_hosts=True, updater="tester")
+
+        dts.refresh_from_db()
+        assert dts.status == MysqlDtsClusterStatus.DESTROYED.value
+        assert dts.cluster_id == 0
+        assert not Machine.objects.filter(bk_host_id=master_pk).exists()
+        assert not Machine.objects.filter(bk_host_id=worker_pk).exists()
+        assert not Cluster.objects.filter(immute_domain=TEST_IMMUTE_DOMAIN).exists()
+
+    @patch("backend.db_meta.api.cluster.mysqldts.decommission.CcManage")
+    def test_decommission_legacy_hard_deletes_cluster(self, mock_cc_manage, legacy_dts_cluster_meta):
+        mock_cc_manage.return_value = MagicMock()
+        cluster_id = legacy_dts_cluster_meta["cluster"].id
+        dts_id = legacy_dts_cluster_meta["dts_cluster"].id
+        proxy_id = legacy_dts_cluster_meta["proxy"].id
+        storage_id = legacy_dts_cluster_meta["storage"].id
+        master_machine_id = legacy_dts_cluster_meta["master_machine"].bk_host_id
+        worker_machine_id = legacy_dts_cluster_meta["worker_machine"].bk_host_id
 
         decommission(dts_cluster_id=dts_id, recycle_hosts=True, updater="tester")
 
@@ -153,23 +180,9 @@ class TestMysqlDtsDecommission:
         assert not ClusterEntry.objects.filter(entry=TEST_MASTER_ADDR).exists()
         assert not ProxyInstance.objects.filter(id=proxy_id).exists()
         assert not StorageInstance.objects.filter(id=storage_id).exists()
-        assert not Machine.objects.filter(id=master_machine_id).exists()
-        assert not Machine.objects.filter(id=worker_machine_id).exists()
+        assert not Machine.objects.filter(bk_host_id=master_machine_id).exists()
+        assert not Machine.objects.filter(bk_host_id=worker_machine_id).exists()
 
         dts_cluster = MysqlDtsCluster.objects.get(id=dts_id)
         assert dts_cluster.status == MysqlDtsClusterStatus.DESTROYED.value
         assert dts_cluster.cluster_id == 0
-
-        # 同名域名可再次创建（验证唯一约束已释放）
-        Cluster.objects.create(
-            bk_biz_id=constant.BK_BIZ_ID,
-            name=TEST_CLUSTER_NAME,
-            alias=TEST_CLUSTER_NAME,
-            cluster_type=ClusterType.MySQLDTS.value,
-            db_module_id=0,
-            immute_domain=TEST_IMMUTE_DOMAIN,
-            phase=ClusterPhase.ONLINE.value,
-            status=ClusterStatus.NORMAL.value,
-            bk_cloud_id=TEST_BK_CLOUD_ID,
-        )
-        assert Cluster.objects.filter(immute_domain=TEST_IMMUTE_DOMAIN).count() == 1

@@ -57,7 +57,11 @@ class MysqlDtsCluster(AuditedModel):
     name = models.CharField(_("集群名称"), max_length=LEN_NORMAL)
     bk_biz_id = models.IntegerField(_("业务ID"), default=0)
     bk_cloud_id = models.IntegerField(_("云区域ID"), default=0)
-    cluster_id = models.IntegerField(_("DBM Cluster ID"), default=0, help_text=_("ClusterType.MySQLDTS"))
+    cluster_id = models.IntegerField(
+        _("DBM Cluster ID"),
+        default=0,
+        help_text=_("已废弃，恒为 0；仅兼容历史数据（曾关联 ClusterType.MySQLDTS）"),
+    )
     status = models.CharField(
         _("状态"),
         max_length=LEN_SHORT,

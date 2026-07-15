@@ -14,6 +14,7 @@ from typing import List, Optional, Union
 from django.db import transaction
 from django.utils.translation import gettext as _
 
+from backend.db_meta.enums import ClusterType
 from backend.db_meta.models import (
     Cluster,
     ClusterDBHAExt,
@@ -38,8 +39,8 @@ def decommission(
 ):
     """下线 MySQL DTS 集群元数据。
 
-    MysqlDtsCluster 软删除（status=DESTROYED, cluster_id=0），因 MysqlDtsInfo 可能引用 dts_cluster_id；
-    关联的 Cluster / ClusterEntry / 实例 / 空闲 Machine 硬删除，释放 immute_domain 以便同名重建。
+    主路径（精简模型）：MysqlDtsCluster 软删（DESTROYED, cluster_id=0），按节点 IP 回收 Machine。
+    兼容路径：历史数据若仍挂 cluster_id>0，先硬删 Cluster/Entry/实例树，再回收剩余 Machine。
     """
     dts_cluster = MysqlDtsCluster.objects.get(id=dts_cluster_id)
 
@@ -48,31 +49,38 @@ def decommission(
         if cluster:
             _delete_cluster_meta(cluster, recycle_hosts=recycle_hosts)
 
+    ips = _collect_host_ips(dts_cluster, target_hosts)
+    _recycle_machines_by_ips(
+        bk_biz_id=dts_cluster.bk_biz_id,
+        bk_cloud_id=dts_cluster.bk_cloud_id,
+        ips=ips,
+        recycle_hosts=recycle_hosts,
+    )
+
     dts_cluster.status = MysqlDtsClusterStatus.DESTROYED.value
     dts_cluster.cluster_id = 0
     dts_cluster.updater = updater
     dts_cluster.save(update_fields=["status", "cluster_id", "updater", "update_at"])
 
     if recycle_hosts:
-        ips = _collect_host_ips(dts_cluster, target_hosts)
         logger.info(_("回收 DTS 主机到资源池: {}").format(ips))
     logger.info(_("MySQL DTS 集群下线完成: id={}").format(dts_cluster_id))
 
 
 def _delete_cluster_meta(cluster: Cluster, recycle_hosts: bool = True):
-    """彻底删除 DTS 关联的 db_meta_cluster 及相关实例/入口。"""
+    """兼容：彻底删除历史 DTS 关联的 Cluster / 实例 / 入口。"""
     cc_manage = CcManage(cluster.bk_biz_id, cluster.cluster_type)
 
     for proxy in list(cluster.proxyinstance_set.all()):
-        machine = proxy.machine
+        machine_obj = proxy.machine
         proxy.bind_entry.clear()
         proxy.storageinstance.clear()
-        _delete_instance_and_maybe_machine(proxy, machine, cc_manage, recycle_hosts)
+        _delete_instance_and_maybe_machine(proxy, machine_obj, cc_manage, recycle_hosts)
 
     for storage in list(cluster.storageinstance_set.all()):
-        machine = storage.machine
+        machine_obj = storage.machine
         storage.bind_entry.clear()
-        _delete_instance_and_maybe_machine(storage, machine, cc_manage, recycle_hosts)
+        _delete_instance_and_maybe_machine(storage, machine_obj, cc_manage, recycle_hosts)
 
     for ce in ClusterEntry.objects.filter(cluster=cluster).all():
         ce.proxyinstance_set.clear()
@@ -87,7 +95,7 @@ def _delete_cluster_meta(cluster: Cluster, recycle_hosts: bool = True):
 
 def _delete_instance_and_maybe_machine(
     instance: Union[ProxyInstance, StorageInstance],
-    machine: Machine,
+    machine_obj: Machine,
     cc_manage: CcManage,
     recycle_hosts: bool,
 ):
@@ -95,16 +103,28 @@ def _delete_instance_and_maybe_machine(
     if instance.bk_instance_id:
         cc_manage.delete_service_instance(bk_instance_ids=[instance.bk_instance_id])
     instance.delete(keep_parents=True)
-    _maybe_delete_machine(machine, recycle_hosts=recycle_hosts, cc_manage=cc_manage)
+    _maybe_delete_machine(machine_obj, recycle_hosts=recycle_hosts, cc_manage=cc_manage)
 
 
-def _maybe_delete_machine(machine: Machine, recycle_hosts: bool, cc_manage: CcManage):
+def _maybe_delete_machine(machine_obj: Machine, recycle_hosts: bool, cc_manage: CcManage):
     """DTS 可能同机部署 Master+Worker，需同时检查 Proxy/Storage 实例。"""
-    if machine.proxyinstance_set.exists() or machine.storageinstance_set.exists():
+    if machine_obj.proxyinstance_set.exists() or machine_obj.storageinstance_set.exists():
         return
-    if recycle_hosts and machine.bk_host_id:
-        cc_manage.recycle_host([machine.bk_host_id])
-    machine.delete(keep_parents=True)
+    if recycle_hosts and machine_obj.bk_host_id:
+        cc_manage.recycle_host([machine_obj.bk_host_id])
+    machine_obj.delete(keep_parents=True)
+
+
+def _recycle_machines_by_ips(bk_biz_id: int, bk_cloud_id: int, ips: List[str], recycle_hosts: bool):
+    """精简模型：按 IP 回收/删除无实例占用的 Machine。"""
+    if not ips:
+        return
+    cc_manage = CcManage(bk_biz_id, ClusterType.MySQLDTS.value)
+    for ip in ips:
+        machine_obj = Machine.objects.filter(ip=ip, bk_cloud_id=bk_cloud_id).first()
+        if not machine_obj:
+            continue
+        _maybe_delete_machine(machine_obj, recycle_hosts=recycle_hosts, cc_manage=cc_manage)
 
 
 def _collect_host_ips(dts_cluster: MysqlDtsCluster, target_hosts: Optional[List[dict]]) -> list[str]:

@@ -14,26 +14,20 @@ from typing import List
 from django.db import transaction
 from django.utils.translation import gettext as _
 
-from backend.constants import DEFAULT_TIME_ZONE
 from backend.db_meta import request_validator
 from backend.db_meta.api import machine
-from backend.db_meta.enums import (
-    AccessLayer,
-    ClusterEntryType,
-    ClusterPhase,
-    ClusterStatus,
-    ClusterType,
-    InstanceInnerRole,
-    InstancePhase,
-    InstanceRole,
-    InstanceStatus,
-    MachineType,
-)
-from backend.db_meta.models import Cluster, ClusterEntry, Machine, MysqlDtsCluster, ProxyInstance, StorageInstance
+from backend.db_meta.enums import AccessLayer, ClusterType, MachineType
+from backend.db_meta.exceptions import DBMetaException
+from backend.db_meta.models import Machine, MysqlDtsCluster
 from backend.db_meta.models.mysql_dts import MysqlDtsClusterStatus
-from backend.flow.utils.mysql.dts.constants import MYSQL_DTS_MASTER_PORT, MYSQL_DTS_WORKER_PORT
 
 logger = logging.getLogger("root")
+
+# 同名不允许再建的活跃状态
+_ACTIVE_STATUSES = (
+    MysqlDtsClusterStatus.DEPLOYING.value,
+    MysqlDtsClusterStatus.RUNNING.value,
+)
 
 
 @transaction.atomic
@@ -49,57 +43,23 @@ def create(
     creator: str = "",
     db_module_id: int = 0,
 ) -> MysqlDtsCluster:
+    """注册 MySQL DTS 集群元数据。
+
+    仅写入 MysqlDtsCluster + Machine，不再创建 Cluster / Proxy / Storage / ClusterEntry。
+    """
     bk_biz_id = request_validator.validated_integer(bk_biz_id)
-    immute_domain = request_validator.validated_domain(f"{name}.dts.db")
-    db_module_id = request_validator.validated_integer(db_module_id) if db_module_id else 0
+    # db_module_id 保留入参兼容，精简模型下不再落库
+    if db_module_id:
+        request_validator.validated_integer(db_module_id)
 
-    cluster = Cluster.objects.create(
-        bk_biz_id=bk_biz_id,
-        name=name,
-        alias=name,
-        cluster_type=ClusterType.MySQLDTS.value,
-        db_module_id=db_module_id,
-        immute_domain=immute_domain,
-        creator=creator,
-        updater=creator,
-        phase=ClusterPhase.ONLINE.value,
-        status=ClusterStatus.NORMAL.value,
-        bk_cloud_id=bk_cloud_id,
-        major_version=version,
-    )
-
+    _assert_name_available(bk_biz_id=bk_biz_id, name=name)
     _ensure_machines(bk_biz_id, bk_cloud_id, master_nodes, worker_nodes, creator=creator)
-    _create_master_proxies(bk_cloud_id, master_nodes, creator=creator)
-    _create_worker_storages(bk_cloud_id, worker_nodes, creator=creator)
-
-    proxy_objs = ProxyInstance.objects.filter(
-        machine__ip__in=[n["ip"] for n in master_nodes],
-        machine__bk_cloud_id=bk_cloud_id,
-        port=MYSQL_DTS_MASTER_PORT,
-    )
-    storage_objs = StorageInstance.objects.filter(
-        machine__ip__in=[n["ip"] for n in worker_nodes],
-        machine__bk_cloud_id=bk_cloud_id,
-        port__in=[n.get("port", MYSQL_DTS_WORKER_PORT) for n in worker_nodes],
-    )
-    cluster.proxyinstance_set.add(*proxy_objs)
-    cluster.storageinstance_set.add(*storage_objs)
-    cluster.save()
-
-    cluster_entry = ClusterEntry.objects.create(
-        cluster=cluster,
-        cluster_entry_type=ClusterEntryType.DNS.value,
-        entry=master_addr,
-        creator=creator,
-    )
-    cluster_entry.proxyinstance_set.add(*proxy_objs)
-    cluster_entry.save()
 
     dts_cluster = MysqlDtsCluster.objects.create(
         name=name,
         bk_biz_id=bk_biz_id,
         bk_cloud_id=bk_cloud_id,
-        cluster_id=cluster.id,
+        cluster_id=0,
         status=MysqlDtsClusterStatus.RUNNING.value,
         master_nodes=master_nodes,
         worker_nodes=worker_nodes,
@@ -109,8 +69,18 @@ def create(
         creator=creator,
         updater=creator,
     )
-    logger.info(_("MySQL DTS 集群注册成功: {} cluster_id={}").format(name, cluster.id))
+    logger.info(_("MySQL DTS 集群注册成功: {} dts_cluster_id={}").format(name, dts_cluster.id))
     return dts_cluster
+
+
+def _assert_name_available(bk_biz_id: int, name: str):
+    exists = MysqlDtsCluster.objects.filter(
+        bk_biz_id=bk_biz_id,
+        name=name,
+        status__in=_ACTIVE_STATUSES,
+    ).exists()
+    if exists:
+        raise DBMetaException(message=_("业务 {} 下 DTS 集群名称 {} 已存在（deploying/running）").format(bk_biz_id, name))
 
 
 def _ensure_machines(
@@ -124,7 +94,7 @@ def _ensure_machines(
 
     同机部署时 Master/Worker 共用一个 bk_host_id；若分别 machine.create 会触发
     Duplicate entry for PRIMARY，外层 atomic 回滚后库内又查不到该行。
-    同机场景 Machine.machine_type 记为 MYSQL_DTS_COLOCATED；实例层各自写 master/worker。
+    同机场景 Machine.machine_type 记为 MYSQL_DTS_COLOCATED。
     """
     master_ips = {n["ip"] for n in master_nodes}
     worker_ips = {n["ip"] for n in worker_nodes}
@@ -171,60 +141,9 @@ def _ensure_machines(
         )
 
 
-def _create_master_proxies(bk_cloud_id: int, master_nodes: List[dict], creator: str = ""):
-    """Master 注册为 ProxyInstance；实例字段按 DTS Master 角色写入，不依赖 Machine.access_layer。"""
-    for node in master_nodes:
-        ip = node["ip"]
-        port = node.get("port", MYSQL_DTS_MASTER_PORT)
-        machine_obj = Machine.objects.get(ip=ip, bk_cloud_id=bk_cloud_id)
-        if ProxyInstance.objects.filter(machine=machine_obj, port=port).exists():
-            continue
-        ProxyInstance.objects.create(
-            machine=machine_obj,
-            port=port,
-            admin_port=port + 1000,
-            db_module_id=machine_obj.db_module_id,
-            bk_biz_id=machine_obj.bk_biz_id,
-            access_layer=AccessLayer.PROXY.value,
-            machine_type=MachineType.MYSQL_DTS_MASTER.value,
-            cluster_type=ClusterType.MySQLDTS.value,
-            status=InstanceStatus.RUNNING.value,
-            creator=creator,
-            time_zone=DEFAULT_TIME_ZONE,
-            version="",
-        )
-
-
-def _create_worker_storages(bk_cloud_id: int, worker_nodes: List[dict], creator: str = ""):
-    """Worker 注册为 StorageInstance；同机时 Machine 可能是 MASTER 类型，实例层仍写 WORKER。"""
-    for node in worker_nodes:
-        ip = node["ip"]
-        port = node.get("port", MYSQL_DTS_WORKER_PORT)
-        machine_obj = Machine.objects.get(ip=ip, bk_cloud_id=bk_cloud_id)
-        if StorageInstance.objects.filter(machine=machine_obj, port=port).exists():
-            continue
-        role = InstanceRole.MYSQL_DTS_WORKER_MASTER.value
-        StorageInstance.objects.create(
-            port=port,
-            machine=machine_obj,
-            db_module_id=machine_obj.db_module_id,
-            bk_biz_id=machine_obj.bk_biz_id,
-            access_layer=AccessLayer.STORAGE.value,
-            machine_type=MachineType.MYSQL_DTS_WORKER.value,
-            instance_role=role,
-            instance_inner_role=InstanceInnerRole.MASTER.value,
-            cluster_type=ClusterType.MySQLDTS.value,
-            status=InstanceStatus.RUNNING.value,
-            creator=creator,
-            name="",
-            time_zone=DEFAULT_TIME_ZONE,
-            version="",
-            is_stand_by=True,
-            phase=InstancePhase.ONLINE.value,
-        )
-
-
+@transaction.atomic
 def append_worker_nodes(dts_cluster_id: int, new_worker_nodes: List[dict], updater: str = ""):
+    """追加 Worker 节点：只更新 JSON + Machine，不再挂 Cluster/StorageInstance。"""
     dts_cluster = MysqlDtsCluster.objects.get(id=dts_cluster_id)
     merged = list(dts_cluster.worker_nodes)
     merged.extend(new_worker_nodes)
@@ -239,12 +158,3 @@ def append_worker_nodes(dts_cluster_id: int, new_worker_nodes: List[dict], updat
         worker_nodes=new_worker_nodes,
         creator=updater,
     )
-    _create_worker_storages(dts_cluster.bk_cloud_id, new_worker_nodes, creator=updater)
-
-    cluster = Cluster.objects.get(id=dts_cluster.cluster_id)
-    storage_objs = StorageInstance.objects.filter(
-        machine__ip__in=[n["ip"] for n in new_worker_nodes],
-        machine__bk_cloud_id=dts_cluster.bk_cloud_id,
-        port__in=[n.get("port", MYSQL_DTS_WORKER_PORT) for n in new_worker_nodes],
-    )
-    cluster.storageinstance_set.add(*storage_objs)
