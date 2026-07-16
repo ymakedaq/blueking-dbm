@@ -15,10 +15,24 @@ from pipeline.component_framework.component import Component
 
 from backend.components import MySQLDTSApi
 from backend.flow.plugins.components.collections.common.base_service import BaseService
-from backend.flow.utils.mysql.dts.migrate_helper import build_dts_task_request
+from backend.flow.utils.mysql.dts.constants import DEFAULT_MYLOADER_PATH
+from backend.flow.utils.mysql.dts.migrate_helper import apply_myloader_dirs_to_sources, build_dts_task_request
 from backend.flow.utils.mysql.dts.migrate_plan import DtsMigratePlan, DtsTaskSpec
 
 logger = logging.getLogger("flow")
+
+
+def _apply_myloader_context_to_task_spec(task_spec: DtsTaskSpec, migrate_context) -> None:
+    """将 migrate_context 中的 myloader 目录/路径回写到 task_spec（运行时）。"""
+    dirs = getattr(migrate_context, "myloader_dirs", None) or {}
+    if dirs:
+        apply_myloader_dirs_to_sources(task_spec, dirs)
+    path = getattr(migrate_context, "myloader_path", "") or DEFAULT_MYLOADER_PATH
+    for src in task_spec.sources:
+        if src.myloader is None:
+            continue
+        if not src.myloader.myloader_path:
+            src.myloader.myloader_path = path
 
 
 class MysqlDtsCreateTaskService(BaseService):
@@ -38,6 +52,7 @@ class MysqlDtsCreateTaskService(BaseService):
         if not dts_user or not dts_password:
             self.log_error(_("DTS 迁移临时账号未创建，请先执行 create_user 步骤"))
             return False
+        _apply_myloader_context_to_task_spec(task_spec, trans_data.migrate_context)
         request = build_dts_task_request(
             plan,
             task_spec,

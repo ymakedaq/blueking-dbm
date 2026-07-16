@@ -44,6 +44,10 @@ class MysqlDtsMigrateContext:
     # create_user 写入，供后续 drop_user 子流程使用（不含密码）
     grant_hosts: list[str] = field(default_factory=list)
     grant_targets: list[dict] = field(default_factory=list)
+    # myloader 全量导入：source_name -> 落盘目录 / 备份摘要 / Worker 上二进制路径
+    myloader_dirs: dict[str, str] = field(default_factory=dict)
+    myloader_path: str = ""
+    myloader_backup_by_source: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass

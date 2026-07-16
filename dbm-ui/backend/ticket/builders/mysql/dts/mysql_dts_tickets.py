@@ -13,7 +13,7 @@ from rest_framework import serializers
 
 from backend.db_meta.enums import ClusterType
 from backend.flow.engine.controller.mysql import MySQLController
-from backend.flow.utils.mysql.dts.constants import MigrateTopology, get_default_deploy_path
+from backend.flow.utils.mysql.dts.constants import FullLoadEngine, MigrateTopology, get_default_deploy_path
 from backend.flow.utils.mysql.dts.migrate_plan import build_migrate_plan
 from backend.ticket import builders
 from backend.ticket.builders.mysql.base import BaseMySQLTicketFlowBuilder
@@ -35,6 +35,32 @@ class SyncScopeSerializer(serializers.Serializer):
     binlog_filters = serializers.ListField(child=serializers.DictField(), required=False, default=list)
 
 
+class MyloaderSpecSerializer(serializers.Serializer):
+    """myloader 全量导入参数（可选；未传时由 Flow 按默认路径组装）。"""
+
+    backup_id = serializers.CharField(required=False, allow_blank=True, help_text=_("指定备份 ID（可选，默认取最新逻辑全备）"))
+    backup_source = serializers.CharField(
+        required=False, allow_blank=True, default="remote", help_text=_("备份源: remote | local")
+    )
+    myloader_path = serializers.CharField(required=False, allow_blank=True, help_text=_("myloader 可执行文件路径（可选）"))
+    myloader_dir = serializers.CharField(required=False, allow_blank=True, help_text=_("全备落盘目录（可选，默认由 Flow 下发）"))
+    # 兼容旧字段名
+    directory = serializers.CharField(required=False, allow_blank=True, help_text=_("备份目录别名，等同 myloader_dir"))
+    threads = serializers.IntegerField(required=False, default=16, min_value=1, help_text=_("并发线程数"))
+    regex = serializers.CharField(required=False, allow_blank=True, help_text=_("库表过滤 regex（可选）"))
+    sourcedb = serializers.CharField(required=False, allow_blank=True, help_text=_("--source-db（可选）"))
+    tablelist = serializers.CharField(required=False, allow_blank=True, help_text=_("--tables-list（可选）"))
+    setnames = serializers.CharField(required=False, allow_blank=True, help_text=_("--set-names（可选）"))
+    defaultsfile = serializers.CharField(required=False, allow_blank=True, help_text=_("defaults-file 路径（可选）"))
+    defaults_file = serializers.CharField(
+        required=False, allow_blank=True, help_text=_("defaults-file 别名，等同 defaultsfile")
+    )
+    extraargs = serializers.CharField(required=False, allow_blank=True, help_text=_("额外参数（可选）"))
+    extra_args = serializers.CharField(required=False, allow_blank=True, help_text=_("额外参数别名，等同 extraargs"))
+    dest_worker_ip = serializers.CharField(required=False, allow_blank=True, help_text=_("全备下发目标 DTS Worker IP（可选）"))
+    shard_id = serializers.IntegerField(required=False, allow_null=True, help_text=_("TenDBCluster 分片 ID（可选）"))
+
+
 class SourceInfoSerializer(serializers.Serializer):
     cluster_id = serializers.IntegerField(help_text=_("源集群ID"))
     source_name = serializers.CharField(required=False, allow_blank=True)
@@ -42,6 +68,7 @@ class SourceInfoSerializer(serializers.Serializer):
     source_instance_id = serializers.IntegerField(required=False)
     source_instance_role = serializers.CharField(required=False, allow_blank=True)
     source_host = serializers.CharField(required=False, allow_blank=True)
+    myloader = MyloaderSpecSerializer(required=False, help_text=_("该源的 myloader 参数（可选）"))
 
 
 class TargetInfoSerializer(serializers.Serializer):
@@ -76,6 +103,13 @@ class DtsTaskConfigSerializer(serializers.Serializer):
     ignore_checking_items = serializers.ListField(child=serializers.CharField(), required=False, default=list)
     full_migrate = serializers.DictField(required=False, default=dict)
     incr_migrate = serializers.DictField(required=False, default=dict)
+    full_load_engine = serializers.ChoiceField(
+        choices=FullLoadEngine.get_choices(),
+        required=False,
+        default=FullLoadEngine.BUILTIN.value,
+        help_text=_("全量导入引擎: builtin | myloader"),
+    )
+    myloader = MyloaderSpecSerializer(required=False, help_text=_("task 级 myloader 默认参数（可选）"))
 
 
 class DeploySubflowSerializer(serializers.Serializer):

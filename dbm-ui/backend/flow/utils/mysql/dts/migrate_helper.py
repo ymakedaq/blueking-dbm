@@ -19,6 +19,7 @@ from backend.components.mysqldtsapi.types import (
     CreateTaskRequest,
     FullMigrateConfig,
     IncrMigrateConfig,
+    MyLoaderConfig,
     Source,
     SourceConfig,
     SourceConfItem,
@@ -34,7 +35,7 @@ from backend.components.mysqldtsapi.types import (
 from backend.db_meta.enums import ClusterType, InstanceRole, TenDBClusterSpiderRole
 from backend.db_meta.models import Cluster, ProxyInstance, StorageInstance
 from backend.db_services.dbbase.constants import IP_PORT_DIVIDER
-from backend.flow.utils.mysql.dts.constants import MigrateType
+from backend.flow.utils.mysql.dts.constants import FullLoadEngine, MigrateType
 from backend.flow.utils.mysql.dts.migrate_credentials import DtsGrantTarget
 from backend.flow.utils.mysql.dts.migrate_plan import DtsMigratePlan, DtsTaskSpec, SourceSpec, SyncScope
 
@@ -426,6 +427,51 @@ def build_target_config(target_cluster_id: int, migrate_type: str, user: str, pa
     return _build_ha_target_config(cluster, user, password)
 
 
+def apply_myloader_dirs_to_sources(task_spec: DtsTaskSpec, dirs: dict[str, str]) -> None:
+    """将下发后的 myloader_dir 写回各 SourceSpec.myloader。"""
+    for src in task_spec.sources:
+        path = dirs.get(src.source_name)
+        if not path:
+            continue
+        if src.myloader is None:
+            from backend.flow.utils.mysql.dts.migrate_plan import MyloaderSpec
+
+            src.myloader = MyloaderSpec()
+        src.myloader.myloader_dir = path
+
+
+def _resolve_myloader_task_mode(cfg_task_mode: str) -> str:
+    mode = (cfg_task_mode or "").strip()
+    if mode in ("myloader", "myloader&sync"):
+        return mode
+    if mode == "full":
+        return "myloader"
+    # all / incremental / 空 → 默认全量+增量
+    return "myloader&sync"
+
+
+def _build_myloader_config_for_source(src, cfg) -> MyLoaderConfig:
+    from backend.flow.utils.mysql.dts.constants import DEFAULT_MYLOADER_PATH
+
+    ml = src.myloader
+    if ml is None:
+        raise ValueError(_("source {} 使用 myloader 时必须提供 myloader 配置").format(src.source_name))
+    if not ml.myloader_dir:
+        raise ValueError(_("source {} 的 myloader_dir 为空，请先完成全备下发").format(src.source_name))
+    path = ml.myloader_path or DEFAULT_MYLOADER_PATH
+    return MyLoaderConfig(
+        myloader_path=path,
+        myloader_dir=ml.myloader_dir,
+        myloader_threads=ml.threads or 16,
+        myloader_regex=ml.regex or "",
+        myloader_sourcedb=ml.sourcedb or "",
+        myloader_tablelist=ml.tablelist or "",
+        myloader_setnames=ml.setnames or "",
+        myloader_defaultsfile=ml.defaultsfile or "",
+        myloader_extraargs=ml.extraargs or "",
+    )
+
+
 def build_dts_task_request(
     plan: DtsMigratePlan,
     task_spec: DtsTaskSpec,
@@ -433,7 +479,6 @@ def build_dts_task_request(
     user: str,
     password: str,
 ) -> CreateTaskRequest:
-    source_conf = [SourceConfItem(source_name=src.source_name) for src in task_spec.sources]
     table_rules: list[TableMigrateRule] = []
     binlog_filters: dict[str, BinlogFilterRuleEntry] = {}
     for src in task_spec.sources:
@@ -449,19 +494,40 @@ def build_dts_task_request(
         target_cfg = build_target_config(task_spec.target_cluster_id, plan.migrate_type, user, password)
 
     cfg = task_spec.dts_task_config
+    use_myloader = cfg.full_load_engine == FullLoadEngine.MYLOADER.value
+
+    if use_myloader:
+        myloaders: dict[str, MyLoaderConfig] = {}
+        source_conf: list[SourceConfItem] = []
+        for src in task_spec.sources:
+            conf_name = f"myloader-{src.source_name}"
+            myloaders[conf_name] = _build_myloader_config_for_source(src, cfg)
+            source_conf.append(SourceConfItem(source_name=src.source_name, myloader_config_name=conf_name))
+        task_mode = _resolve_myloader_task_mode(cfg.task_mode)
+        source_config = SourceConfig(
+            source_conf=source_conf,
+            full_migrate_conf=None,
+            incr_migrate_conf=IncrMigrateConfig(**cfg.incr_migrate) if cfg.incr_migrate else None,
+            myloaders=myloaders,
+        )
+    else:
+        source_conf = [SourceConfItem(source_name=src.source_name) for src in task_spec.sources]
+        task_mode = cfg.task_mode
+        source_config = SourceConfig(
+            source_conf=source_conf,
+            full_migrate_conf=FullMigrateConfig(**cfg.full_migrate) if cfg.full_migrate else None,
+            incr_migrate_conf=IncrMigrateConfig(**cfg.incr_migrate) if cfg.incr_migrate else None,
+        )
+
     task = Task(
         name=task_spec.task_name,
-        task_mode=cfg.task_mode,
+        task_mode=task_mode,
         shard_mode=cfg.shard_mode or "",
         on_duplicate=cfg.on_duplicate,
         meta_schema=cfg.meta_schema,
         ignore_checking_items=cfg.ignore_checking_items,
         target_config=target_cfg,
-        source_config=SourceConfig(
-            source_conf=source_conf,
-            full_migrate_conf=FullMigrateConfig(**cfg.full_migrate) if cfg.full_migrate else None,
-            incr_migrate_conf=IncrMigrateConfig(**cfg.incr_migrate) if cfg.incr_migrate else None,
-        ),
+        source_config=source_config,
         table_migrate_rule=table_rules,
         binlog_filter_rule=binlog_filters,
     )

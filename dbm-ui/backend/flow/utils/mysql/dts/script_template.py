@@ -194,3 +194,31 @@ cat > "${CONF_DIR}/{{config_file}}" <<'DTS_CONFIG_EOF'
 DTS_CONFIG_EOF
 echo "wrote ${CONF_DIR}/{{config_file}}"
 """
+
+# 将 /data/install 下的 dbbackup 介质解压到 /home/mysql/dbbackup，保证 bin/myloader 可用
+ensure_myloader_binary_template = """
+set -euo pipefail
+INSTALL_DIR="/data/install"
+TARGET="/home/mysql/dbbackup"
+PKG="$(ls -1t ${INSTALL_DIR}/dbbackup*.tar.gz ${INSTALL_DIR}/dbbackup*.tgz 2>/dev/null | head -1 || true)"
+if [ -z "${PKG}" ]; then
+  echo "dbbackup package not found under ${INSTALL_DIR}"
+  exit 1
+fi
+rm -rf "${TARGET}"
+mkdir -p "${TARGET}"
+tar -xzf "${PKG}" -C "${TARGET}"
+if [ ! -e "${TARGET}/bin/myloader" ]; then
+  FOUND="$(find "${TARGET}" -type f -name myloader 2>/dev/null | head -1 || true)"
+  if [ -z "${FOUND}" ]; then
+    echo "myloader binary not found after extract ${PKG}"
+    exit 1
+  fi
+  mkdir -p "${TARGET}/bin"
+  ln -sfn "${FOUND}" "${TARGET}/bin/myloader"
+fi
+chown -R mysql:mysql "${TARGET}" || true
+chmod a+x "${TARGET}/bin/myloader" || true
+test -e "${TARGET}/bin/myloader"
+echo "myloader ready at ${TARGET}/bin/myloader"
+"""

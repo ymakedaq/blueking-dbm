@@ -11,13 +11,22 @@ specific language governing permissions and limitations under the License.
 from django.utils.translation import gettext as _
 
 from backend.flow.engine.bamboo.scene.common.builder import SubBuilder
+from backend.flow.engine.bamboo.scene.mysql.dts.mysql_dts_myloader_import_subflow import (
+    mysql_dts_myloader_import_subflow,
+)
 from backend.flow.plugins.components.collections.mysql.dts.migrate.create_task import MysqlDtsCreateTaskComponent
 from backend.flow.plugins.components.collections.mysql.dts.migrate.register_source import (
     MysqlDtsRegisterSourceComponent,
 )
 from backend.flow.plugins.components.collections.mysql.dts.migrate.start_task import MysqlDtsStartTaskComponent
 from backend.flow.plugins.components.collections.mysql.dts.migrate.update_meta import MysqlDtsUpdateMetaComponent
+from backend.flow.utils.mysql.dts.constants import FullLoadEngine
 from backend.flow.utils.mysql.dts.migrate_plan import DtsMigratePlan, DtsTaskSpec
+
+
+def _use_myloader_engine(task_spec: DtsTaskSpec, migrate_plan: DtsMigratePlan) -> bool:
+    engine = task_spec.dts_task_config.full_load_engine or migrate_plan.dts_task_config.full_load_engine
+    return engine == FullLoadEngine.MYLOADER.value
 
 
 def mysql_dts_migrate_task_subflow(
@@ -50,23 +59,40 @@ def mysql_dts_migrate_task_subflow(
             "migrate_type": migrate_plan.migrate_type,
         },
     )
-    sub.add_act(
-        act_name=_("创建 DTS 任务"),
-        act_component_code=MysqlDtsCreateTaskComponent.code,
-        kwargs={
-            "master_addr": master_addr,
-            "task_spec": task_spec,
-            "migrate_plan": migrate_plan,
-        },
-    )
-    sub.add_act(
-        act_name=_("启动 DTS 任务"),
-        act_component_code=MysqlDtsStartTaskComponent.code,
-        kwargs={
-            "master_addr": master_addr,
-            "task_name": task_spec.task_name,
-        },
-    )
+
+    if _use_myloader_engine(task_spec, migrate_plan):
+        # myloader：全备下发 + 介质就绪 + create/start
+        sub.add_sub_pipeline(
+            sub_flow=mysql_dts_myloader_import_subflow(
+                root_id=root_id,
+                bk_biz_id=bk_biz_id,
+                ticket_id=ticket_id,
+                master_addr=master_addr,
+                task_spec=task_spec,
+                migrate_plan=migrate_plan,
+                creator=creator,
+                include_create_start=True,
+            ).build_sub_process(sub_name=_("myloader 全量导入并建启任务"))
+        )
+    else:
+        sub.add_act(
+            act_name=_("创建 DTS 任务"),
+            act_component_code=MysqlDtsCreateTaskComponent.code,
+            kwargs={
+                "master_addr": master_addr,
+                "task_spec": task_spec,
+                "migrate_plan": migrate_plan,
+            },
+        )
+        sub.add_act(
+            act_name=_("启动 DTS 任务"),
+            act_component_code=MysqlDtsStartTaskComponent.code,
+            kwargs={
+                "master_addr": master_addr,
+                "task_name": task_spec.task_name,
+            },
+        )
+
     sub.add_act(
         act_name=_("写入迁移元数据"),
         act_component_code=MysqlDtsUpdateMetaComponent.code,
