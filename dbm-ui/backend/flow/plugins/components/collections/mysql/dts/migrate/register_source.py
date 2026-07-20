@@ -38,7 +38,6 @@ class MysqlDtsRegisterSourceService(BaseService):
         if not dts_user or not dts_password:
             self.log_error(_("DTS 迁移临时账号未创建，请先执行 create_user 步骤"))
             return False
-        worker_name = kwargs.get("worker_name")
 
         registered = []
         target_cluster = Cluster.objects.get(id=task_spec.target_cluster_id)
@@ -48,19 +47,21 @@ class MysqlDtsRegisterSourceService(BaseService):
 
         for source_spec in task_spec.sources:
             cluster = Cluster.objects.get(id=source_spec.cluster_id)
+            # source 级 worker_name 优先；kwargs 全局 worker_name 兜底（Cluster 源单据可先调用 assign_source_workers）
             request = build_create_source_request(
                 source_spec,
                 cluster,
                 user=dts_user,
                 password=dts_password,
-                worker_name=worker_name,
+                worker_name=source_spec.worker_name or kwargs.get("worker_name"),
                 target_cluster=target_cluster,
                 migrate_type=migrate_type,
             )
             self.log_info(
-                _("注册 Source {} enable_gtid={} (源集群={}, 目标集群={})").format(
+                _("注册 Source {} enable_gtid={} worker={} (源集群={}, 目标集群={})").format(
                     source_spec.source_name,
                     request.source.enable_gtid,
+                    request.worker_name or "",
                     cluster.id,
                     target_cluster.id,
                 )

@@ -98,14 +98,19 @@ class BuildDtsTaskRequestMyloaderTest(SimpleTestCase):
 
     def test_parse_full_load_engine_and_myloader_from_plan(self):
         details = {
-            "migrate_topology": MigrateTopology.ONE_TO_ONE.value,
-            "dts_task_config": {
-                "full_load_engine": FullLoadEngine.MYLOADER.value,
-                "myloader": {"threads": 12, "dest_worker_ip": "127.0.0.2"},
+            "dts_resource": {"mode": "use_existing", "cluster_id": 9},
+            "migrate": {
+                "topology": MigrateTopology.ONE_TO_ONE.value,
+                "one_to_one": {
+                    "source": {"cluster_id": 1, "source_name": "src-1", "sync_scope": {"do_dbs": ["db_a"]}},
+                    "target": {"cluster_id": 2},
+                },
             },
-            "one_to_one": {
-                "src_info": {"cluster_id": 1, "source_name": "src-1", "sync_scope": {"do_dbs": ["db_a"]}},
-                "dst_info": {"cluster_id": 2},
+            "task": {
+                "full_load": {
+                    "engine": FullLoadEngine.MYLOADER.value,
+                    "myloader": {"threads": 12, "dest_worker_ip": "127.0.0.2"},
+                }
             },
         }
         plan = build_migrate_plan(details)
@@ -166,11 +171,13 @@ class ResolveLogicalBackupTest(SimpleTestCase):
 
 class MyloaderSubflowSmokeTest(SimpleTestCase):
     @patch(
+        "backend.flow.engine.bamboo.scene.mysql.dts.mysql_dts_myloader_import_subflow.install_dbbackup_v2_subflow"
+    )
+    @patch(
         "backend.flow.engine.bamboo.scene.mysql.dts.mysql_dts_myloader_import_subflow.mysql_restore_download_sub_flow"
     )
-    @patch("backend.flow.engine.bamboo.scene.mysql.dts.mysql_dts_myloader_import_subflow.Package.get_latest_package")
     @patch("backend.flow.engine.bamboo.scene.mysql.dts.mysql_dts_myloader_import_subflow.resolve_task_logical_backups")
-    def test_subflow_assembles_without_error(self, mock_resolve, mock_pkg, mock_download):
+    def test_subflow_assembles_without_error(self, mock_resolve, mock_download, mock_install_dbbackup):
         from backend.flow.engine.bamboo.scene.common.builder import SubBuilder
         from backend.flow.engine.bamboo.scene.mysql.dts.mysql_dts_myloader_import_subflow import (
             mysql_dts_myloader_import_subflow,
@@ -184,7 +191,7 @@ class MyloaderSubflowSmokeTest(SimpleTestCase):
         from backend.flow.plugins.components.collections.mysql.dts.migrate.start_task import MysqlDtsStartTaskComponent
         from backend.flow.utils.mysql.dts.backup_helper import ResolvedLogicalBackup
 
-        mock_pkg.return_value = MagicMock(path="mysql/dbbackup/latest/dbbackup.tar.gz")
+        mock_install_dbbackup.return_value = MagicMock(name="install-dbbackup-sub")
         mock_download.return_value = MagicMock(name="download-sub")
         mock_resolve.return_value = [
             ResolvedLogicalBackup(
@@ -216,8 +223,9 @@ class MyloaderSubflowSmokeTest(SimpleTestCase):
             self.assertIn(MysqlDtsResolveLogicalBackupComponent.code, codes)
             self.assertIn(MysqlDtsCreateTaskComponent.code, codes)
             self.assertIn(MysqlDtsStartTaskComponent.code, codes)
-            add_sub.assert_called()
+            self.assertEqual(add_sub.call_count, 2)
             mock_download.assert_called_once()
+            mock_install_dbbackup.assert_called_once()
 
     @patch(
         "backend.flow.engine.bamboo.scene.mysql.dts.mysql_dts_migrate_task_subflow.mysql_dts_myloader_import_subflow"

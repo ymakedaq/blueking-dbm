@@ -8,12 +8,18 @@ Unless required by applicable law or agreed to in writing, software distributed 
 an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 """
+from django.utils.translation import gettext as gettext_runtime
 from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
 from backend.db_meta.enums import ClusterType
 from backend.flow.engine.controller.mysql import MySQLController
-from backend.flow.utils.mysql.dts.constants import FullLoadEngine, MigrateTopology, get_default_deploy_path
+from backend.flow.utils.mysql.dts.constants import (
+    DtsLifecycleMode,
+    FullLoadEngine,
+    MigrateTopology,
+    get_default_deploy_path,
+)
 from backend.flow.utils.mysql.dts.migrate_plan import build_migrate_plan
 from backend.ticket import builders
 from backend.ticket.builders.mysql.base import BaseMySQLTicketFlowBuilder
@@ -36,7 +42,7 @@ class SyncScopeSerializer(serializers.Serializer):
 
 
 class MyloaderSpecSerializer(serializers.Serializer):
-    """myloader 全量导入参数（可选；未传时由 Flow 按默认路径组装）。"""
+    """myloader 全量导入参数（full_load.engine=myloader 时使用）。"""
 
     backup_id = serializers.CharField(required=False, allow_blank=True, help_text=_("指定备份 ID（可选，默认取最新逻辑全备）"))
     backup_source = serializers.CharField(
@@ -44,108 +50,145 @@ class MyloaderSpecSerializer(serializers.Serializer):
     )
     myloader_path = serializers.CharField(required=False, allow_blank=True, help_text=_("myloader 可执行文件路径（可选）"))
     myloader_dir = serializers.CharField(required=False, allow_blank=True, help_text=_("全备落盘目录（可选，默认由 Flow 下发）"))
-    # 兼容旧字段名
-    directory = serializers.CharField(required=False, allow_blank=True, help_text=_("备份目录别名，等同 myloader_dir"))
     threads = serializers.IntegerField(required=False, default=16, min_value=1, help_text=_("并发线程数"))
     regex = serializers.CharField(required=False, allow_blank=True, help_text=_("库表过滤 regex（可选）"))
     sourcedb = serializers.CharField(required=False, allow_blank=True, help_text=_("--source-db（可选）"))
     tablelist = serializers.CharField(required=False, allow_blank=True, help_text=_("--tables-list（可选）"))
     setnames = serializers.CharField(required=False, allow_blank=True, help_text=_("--set-names（可选）"))
     defaultsfile = serializers.CharField(required=False, allow_blank=True, help_text=_("defaults-file 路径（可选）"))
-    defaults_file = serializers.CharField(
-        required=False, allow_blank=True, help_text=_("defaults-file 别名，等同 defaultsfile")
-    )
     extraargs = serializers.CharField(required=False, allow_blank=True, help_text=_("额外参数（可选）"))
-    extra_args = serializers.CharField(required=False, allow_blank=True, help_text=_("额外参数别名，等同 extraargs"))
-    dest_worker_ip = serializers.CharField(required=False, allow_blank=True, help_text=_("全备下发目标 DTS Worker IP（可选）"))
+    dest_worker_ip = serializers.CharField(
+        required=False, allow_blank=True, help_text=_("全备下发目标 DTS Worker IP（可选）")
+    )
     shard_id = serializers.IntegerField(required=False, allow_null=True, help_text=_("TenDBCluster 分片 ID（可选）"))
 
 
-class SourceInfoSerializer(serializers.Serializer):
+class MigrateSourceSerializer(serializers.Serializer):
     cluster_id = serializers.IntegerField(help_text=_("源集群ID"))
-    source_name = serializers.CharField(required=False, allow_blank=True)
-    sync_scope = SyncScopeSerializer(required=False)
-    source_instance_id = serializers.IntegerField(required=False)
-    source_instance_role = serializers.CharField(required=False, allow_blank=True)
-    source_host = serializers.CharField(required=False, allow_blank=True)
+    source_name = serializers.CharField(required=False, allow_blank=True, help_text=_("DTS Source 名称（可选）"))
+    sync_scope = SyncScopeSerializer(required=False, help_text=_("库表同步范围"))
+    source_instance_id = serializers.IntegerField(required=False, help_text=_("指定源实例 ID（可选）"))
+    source_instance_role = serializers.CharField(required=False, allow_blank=True, help_text=_("指定源实例角色（可选）"))
+    source_host = serializers.CharField(required=False, allow_blank=True, help_text=_("指定源地址 ip:port（可选）"))
     myloader = MyloaderSpecSerializer(required=False, help_text=_("该源的 myloader 参数（可选）"))
 
 
-class TargetInfoSerializer(serializers.Serializer):
+class MigrateTargetSerializer(serializers.Serializer):
     cluster_id = serializers.IntegerField(help_text=_("目标集群ID"))
-    task_name = serializers.CharField(required=False, allow_blank=True)
-    sync_scope = SyncScopeSerializer(required=False)
+    task_name = serializers.CharField(required=False, allow_blank=True, help_text=_("任务名（一对多时可用）"))
+    sync_scope = SyncScopeSerializer(required=False, help_text=_("目标侧库表范围覆盖（可选）"))
 
 
-class OneToOneSpecSerializer(serializers.Serializer):
-    src_info = SourceInfoSerializer()
-    dst_info = TargetInfoSerializer()
-    task_name = serializers.CharField(required=False, allow_blank=True)
+class MigrateOneToOneSerializer(serializers.Serializer):
+    task_name = serializers.CharField(required=False, allow_blank=True, help_text=_("DTS 任务名"))
+    source = MigrateSourceSerializer(help_text=_("源集群"))
+    target = MigrateTargetSerializer(help_text=_("目标集群"))
 
 
-class ManyToOneSpecSerializer(serializers.Serializer):
-    src_infos = serializers.ListSerializer(child=SourceInfoSerializer())
-    dst_info = TargetInfoSerializer()
-    task_name = serializers.CharField(required=False, allow_blank=True)
+class MigrateManyToOneSerializer(serializers.Serializer):
+    task_name = serializers.CharField(required=False, allow_blank=True, help_text=_("DTS 任务名"))
+    sources = serializers.ListSerializer(child=MigrateSourceSerializer(), help_text=_("多个源集群"))
+    target = MigrateTargetSerializer(help_text=_("目标集群"))
 
 
-class OneToManySpecSerializer(serializers.Serializer):
-    src_info = SourceInfoSerializer()
-    dst_infos = serializers.ListSerializer(child=TargetInfoSerializer())
+class MigrateOneToManySerializer(serializers.Serializer):
+    source = MigrateSourceSerializer(help_text=_("源集群"))
+    targets = serializers.ListSerializer(child=MigrateTargetSerializer(), help_text=_("多个目标集群"))
 
 
-class DtsTaskConfigSerializer(serializers.Serializer):
-    task_mode = serializers.CharField(default="all")
-    enable_validator = serializers.BooleanField(default=False)
-    shard_mode = serializers.CharField(required=False, allow_blank=True, default="")
-    on_duplicate = serializers.CharField(required=False, allow_blank=True, default="replace")
-    meta_schema = serializers.CharField(required=False, allow_blank=True, default="dm_meta")
-    ignore_checking_items = serializers.ListField(child=serializers.CharField(), required=False, default=list)
-    full_migrate = serializers.DictField(required=False, default=dict)
-    incr_migrate = serializers.DictField(required=False, default=dict)
-    full_load_engine = serializers.ChoiceField(
-        choices=FullLoadEngine.get_choices(),
-        required=False,
-        default=FullLoadEngine.BUILTIN.value,
-        help_text=_("全量导入引擎: builtin | myloader"),
-    )
-    myloader = MyloaderSpecSerializer(required=False, help_text=_("task 级 myloader 默认参数（可选）"))
+class MigrateSpecSerializer(serializers.Serializer):
+    """迁什么：拓扑 + 源/目标。"""
 
-
-class DeploySubflowSerializer(serializers.Serializer):
-    cluster_name = serializers.CharField(required=False, allow_blank=True)
-    bk_cloud_id = serializers.IntegerField(required=False)
-    master_hosts = serializers.ListSerializer(child=DtsHostSpecSerializer())
-    worker_hosts = serializers.ListSerializer(child=DtsHostSpecSerializer())
-    deploy_path = serializers.CharField(required=False, allow_blank=True)
-    master_ha = serializers.BooleanField(default=False)
-
-
-class MysqlMigrateBaseDetailSerializer(serializers.Serializer):
-    migrate_topology = serializers.ChoiceField(choices=MigrateTopology.get_choices())
-    dts_cluster_id = serializers.IntegerField(required=False)
-    auto_deploy_dts = serializers.BooleanField(default=False)
-    dts_lifecycle = serializers.CharField(required=False, allow_blank=True)
-    cleanup_after_migrate = serializers.BooleanField(required=False)
-    recycle_dts_hosts = serializers.BooleanField(default=True)
-    dts_task_config = DtsTaskConfigSerializer(required=False)
-    deploy_subflow = DeploySubflowSerializer(required=False)
-    one_to_one = OneToOneSpecSerializer(required=False)
-    many_to_one = ManyToOneSpecSerializer(required=False)
-    one_to_many = OneToManySpecSerializer(required=False)
+    topology = serializers.ChoiceField(choices=MigrateTopology.get_choices(), help_text=_("迁移拓扑"))
+    one_to_one = MigrateOneToOneSerializer(required=False)
+    many_to_one = MigrateManyToOneSerializer(required=False)
+    one_to_many = MigrateOneToManySerializer(required=False)
 
     def validate(self, attrs):
-        topology = attrs["migrate_topology"]
-        topology_fields = {
+        topology = attrs["topology"]
+        field_map = {
             MigrateTopology.ONE_TO_ONE.value: "one_to_one",
             MigrateTopology.MANY_TO_ONE.value: "many_to_one",
             MigrateTopology.ONE_TO_MANY.value: "one_to_many",
         }
-        field_name = topology_fields[topology]
+        field_name = field_map[topology]
         if not attrs.get(field_name):
-            raise serializers.ValidationError(_("拓扑 {} 必须填写 {} 字段").format(topology, field_name))
-        if not attrs.get("dts_cluster_id") and attrs.get("auto_deploy_dts") and not attrs.get("deploy_subflow"):
-            raise serializers.ValidationError(_("自动部署 DTS 时必须填写 deploy_subflow"))
+            raise serializers.ValidationError(
+                gettext_runtime("拓扑 {} 必须填写 migrate.{}").format(topology, field_name)
+            )
+        return attrs
+
+
+class DtsDeploySerializer(serializers.Serializer):
+    cluster_name = serializers.CharField(required=False, allow_blank=True, help_text=_("DTS 集群名"))
+    bk_cloud_id = serializers.IntegerField(required=False, help_text=_("云区域ID"))
+    master_hosts = serializers.ListSerializer(child=DtsHostSpecSerializer(), help_text=_("Master 主机列表"))
+    worker_hosts = serializers.ListSerializer(child=DtsHostSpecSerializer(), help_text=_("Worker 主机列表"))
+    deploy_path = serializers.CharField(required=False, allow_blank=True, help_text=_("部署路径（可选）"))
+    master_ha = serializers.BooleanField(default=False, help_text=_("是否 Master HA"))
+
+
+class DtsResourceSerializer(serializers.Serializer):
+    """DTS 集群从哪来、迁完怎么办。"""
+
+    mode = serializers.ChoiceField(
+        choices=DtsLifecycleMode.get_choices(),
+        help_text=_("DTS 资源模式: use_existing | deploy_ephemeral | deploy_persistent"),
+    )
+    cluster_id = serializers.IntegerField(required=False, help_text=_("已有 DTS 集群 ID（mode=use_existing 时必填）"))
+    deploy = DtsDeploySerializer(required=False, help_text=_("部署参数（mode=deploy_* 时必填）"))
+    cleanup_after_migrate = serializers.BooleanField(
+        required=False, help_text=_("迁移结束后是否清理临时 DTS（默认：ephemeral=true）")
+    )
+    recycle_hosts = serializers.BooleanField(required=False, default=True, help_text=_("清理时是否回收主机"))
+
+    def validate(self, attrs):
+        mode = attrs["mode"]
+        if mode == DtsLifecycleMode.USE_EXISTING.value:
+            if not attrs.get("cluster_id"):
+                raise serializers.ValidationError(gettext_runtime("mode=use_existing 时必须填写 cluster_id"))
+        elif mode in (DtsLifecycleMode.DEPLOY_EPHEMERAL.value, DtsLifecycleMode.DEPLOY_PERSISTENT.value):
+            if not attrs.get("deploy"):
+                raise serializers.ValidationError(gettext_runtime("mode={} 时必须填写 deploy").format(mode))
+        return attrs
+
+
+class FullLoadSerializer(serializers.Serializer):
+    engine = serializers.ChoiceField(
+        choices=FullLoadEngine.get_choices(),
+        default=FullLoadEngine.BUILTIN.value,
+        help_text=_("全量导入引擎: builtin | myloader"),
+    )
+    myloader = MyloaderSpecSerializer(required=False, help_text=_("engine=myloader 时的参数"))
+
+
+class TaskSpecSerializer(serializers.Serializer):
+    """任务怎么跑。"""
+
+    task_mode = serializers.CharField(required=False, default="all", help_text=_("任务模式: all | full | incremental"))
+    full_load = FullLoadSerializer(required=False, help_text=_("全量导入配置"))
+    enable_validator = serializers.BooleanField(required=False, default=False, help_text=_("是否开启数据校验"))
+    shard_mode = serializers.CharField(required=False, allow_blank=True, default="", help_text=_("分片模式（可选）"))
+    on_duplicate = serializers.CharField(required=False, default="replace", help_text=_("冲突策略"))
+    meta_schema = serializers.CharField(required=False, default="dm_meta", help_text=_("元数据库名"))
+    ignore_checking_items = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list, help_text=_("忽略的检查项")
+    )
+    engine_options = serializers.DictField(
+        required=False,
+        default=dict,
+        help_text=_("引擎透传选项，如 {full_migrate: {}, incr_migrate: {}}"),
+    )
+
+
+class MysqlMigrateBaseDetailSerializer(serializers.Serializer):
+    """迁移单据分层入参：dts_resource + migrate + task。"""
+
+    dts_resource = DtsResourceSerializer(help_text=_("DTS 资源（集群来源与生命周期）"))
+    migrate = MigrateSpecSerializer(help_text=_("迁移拓扑与源/目标"))
+    task = TaskSpecSerializer(required=False, help_text=_("任务运行参数"))
+
+    def validate(self, attrs):
         attrs["migrate_plan"] = build_migrate_plan({**attrs, "bk_biz_id": self.context.get("bk_biz_id", 0)})
         return attrs
 

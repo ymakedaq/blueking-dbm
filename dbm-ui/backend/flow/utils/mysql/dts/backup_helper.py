@@ -54,23 +54,45 @@ class ResolvedLogicalBackup:
         }
 
 
+def _worker_ip_by_name(workers: list[dict], worker_name: str) -> str:
+    for node in workers:
+        name = node.get("name") or node.get("worker_name") or ""
+        if name == worker_name and node.get("ip"):
+            return node["ip"]
+    return ""
+
+
 def resolve_dest_worker_ip(
     migrate_plan: DtsMigratePlan,
     source: SourceSpec,
     source_index: int = 0,
 ) -> str:
-    """解析全备下发目标 DTS Worker IP。"""
+    """解析全备下发目标 DTS Worker IP。
+
+    优先级：myloader.dest_worker_ip → source.worker_name 对应节点 → 按下标轮询。
+    """
     if source.myloader and source.myloader.dest_worker_ip:
         return source.myloader.dest_worker_ip
 
+    workers: list[dict] = []
     if migrate_plan.dts_cluster_id:
         dts_cluster = MysqlDtsCluster.objects.filter(id=migrate_plan.dts_cluster_id).first()
-        workers = (dts_cluster.worker_nodes if dts_cluster else None) or []
-        if workers:
-            return workers[source_index % len(workers)]["ip"]
+        workers = list((dts_cluster.worker_nodes if dts_cluster else None) or [])
+
+    if source.worker_name and workers:
+        ip = _worker_ip_by_name(workers, source.worker_name)
+        if ip:
+            return ip
+
+    if workers:
+        return workers[source_index % len(workers)]["ip"]
 
     deploy = migrate_plan.deploy_subflow_inp
     if deploy and deploy.worker_hosts:
+        if source.worker_name:
+            for host in deploy.worker_hosts:
+                if host.name == source.worker_name:
+                    return host.ip
         return deploy.worker_hosts[source_index % len(deploy.worker_hosts)].ip
 
     raise ValueError(_("无法解析 source {} 的 DTS Worker IP，请在 myloader.dest_worker_ip 中指定").format(source.source_name))

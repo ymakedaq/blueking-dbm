@@ -23,6 +23,7 @@ from backend.components.mysqldtsapi.types import (
     Source,
     SourceConfig,
     SourceConfItem,
+    SpiderInfo,
     TableMigrateRule,
     TableMigrateSource,
     TableMigrateTarget,
@@ -33,11 +34,19 @@ from backend.components.mysqldtsapi.types import (
     Task,
 )
 from backend.db_meta.enums import ClusterType, InstanceRole, TenDBClusterSpiderRole
-from backend.db_meta.models import Cluster, ProxyInstance, StorageInstance
+from backend.db_meta.models import Cluster, MysqlDtsCluster, ProxyInstance, StorageInstance
 from backend.db_services.dbbase.constants import IP_PORT_DIVIDER
 from backend.flow.utils.mysql.dts.constants import FullLoadEngine, MigrateType
 from backend.flow.utils.mysql.dts.migrate_credentials import DtsGrantTarget
-from backend.flow.utils.mysql.dts.migrate_plan import DtsMigratePlan, DtsTaskSpec, SourceSpec, SyncScope
+from backend.flow.utils.mysql.dts.migrate_plan import (
+    DtsMigratePlan,
+    DtsTaskConfig,
+    DtsTaskSpec,
+    MyloaderSpec,
+    SourceSpec,
+    SyncScope,
+    copy_myloader_spec,
+)
 
 logger = logging.getLogger("flow")
 
@@ -73,6 +82,123 @@ def resolve_source_endpoint(source_spec: SourceSpec, cluster: Cluster) -> tuple[
     if not ins:
         raise ValueError(_("集群 {} 未找到可用的源实例").format(cluster.id))
     return ins.machine.ip, ins.port
+
+
+def _pick_shard_remote_instance(shard) -> StorageInstance:
+    """分片连接端点：优先 Remote Slave（standby），否则 Remote Master（ejector）。"""
+    receiver = shard.storage_instance_tuple.receiver
+    ejector = shard.storage_instance_tuple.ejector
+    if receiver is not None:
+        if getattr(receiver, "is_stand_by", False):
+            return receiver
+        return receiver
+    if ejector is None:
+        raise ValueError(_("分片 {} 未找到 Remote 实例").format(shard.shard_id))
+    return ejector
+
+
+def expand_tendbcluster_source_specs(
+    source: SourceSpec,
+    task_cfg: DtsTaskConfig | None = None,
+) -> list[SourceSpec]:
+    """将 TenDBCluster 源展开为 N 个 SourceSpec（一分片一 Source）。
+
+    已带 shard_index 的 source 视为手工展开，原样返回。
+    非 TenDBCluster 原样返回。
+    """
+    if source.shard_index is not None:
+        return [source]
+
+    cluster = Cluster.objects.get(id=source.cluster_id)
+    if cluster.cluster_type != ClusterType.TenDBCluster.value:
+        return [source]
+
+    shards = list(cluster.tendbclusterstorageset_set.all().order_by("shard_id"))
+    if not shards:
+        raise ValueError(_("TenDBCluster {} 无分片元数据，无法展开 Source").format(cluster.id))
+
+    shard_count = len(shards)
+    spider_cluster_id = source.spider_cluster_id or cluster.immute_domain
+    base_name = source.source_name or "source"
+    use_myloader = False
+    if task_cfg and task_cfg.full_load_engine == FullLoadEngine.MYLOADER.value:
+        use_myloader = True
+    if source.myloader is not None or (task_cfg and task_cfg.myloader is not None):
+        use_myloader = True
+
+    expanded: list[SourceSpec] = []
+    for shard in shards:
+        ins = _pick_shard_remote_instance(shard)
+        myloader = copy_myloader_spec(source.myloader)
+        if myloader is None and task_cfg:
+            myloader = copy_myloader_spec(task_cfg.myloader)
+        if use_myloader:
+            if myloader is None:
+                myloader = MyloaderSpec()
+            myloader.shard_id = shard.shard_id
+        expanded.append(
+            SourceSpec(
+                cluster_id=source.cluster_id,
+                source_name=f"{base_name}-{shard.shard_id}",
+                sync_scope=source.sync_scope,
+                source_instance_id=ins.id,
+                source_instance_role=None,
+                source_host=None,
+                myloader=myloader,
+                shard_index=shard.shard_id,
+                shard_count=shard_count,
+                spider_cluster_id=spider_cluster_id,
+                worker_name=source.worker_name or "",
+            )
+        )
+    return expanded
+
+
+def assign_source_workers(
+    sources: list[SourceSpec],
+    worker_nodes: list[dict],
+) -> None:
+    """按 shard_index / 顺序为一对一绑定 worker_name 与 dest_worker_ip。"""
+    if not sources:
+        return
+    if len(worker_nodes) < len(sources):
+        raise ValueError(
+            _("DTS Worker 数量({}) 少于 Source 数量({})，TenDBCluster 源需一分片一 Worker").format(
+                len(worker_nodes), len(sources)
+            )
+        )
+    ordered = sorted(
+        enumerate(sources),
+        key=lambda item: (item[1].shard_index is None, item[1].shard_index if item[1].shard_index is not None else item[0]),
+    )
+    for bind_idx, (unused_orig_idx, src) in enumerate(ordered):
+        node = worker_nodes[bind_idx]
+        name = node.get("name") or node.get("worker_name") or ""
+        ip = node.get("ip") or ""
+        if not name:
+            raise ValueError(_("Worker 节点缺少 name，无法绑定 Source {}").format(src.source_name))
+        src.worker_name = name
+        if src.myloader is None:
+            continue
+        if not src.myloader.dest_worker_ip and ip:
+            src.myloader.dest_worker_ip = ip
+
+
+def resolve_dts_worker_nodes(migrate_plan: DtsMigratePlan, deployed_worker_nodes: list | None = None) -> list[dict]:
+    """解析可用于绑定的 DTS Worker 节点列表。"""
+    if deployed_worker_nodes:
+        return list(deployed_worker_nodes)
+    if migrate_plan.dts_cluster_id:
+        dts_cluster = MysqlDtsCluster.objects.filter(id=migrate_plan.dts_cluster_id).first()
+        if dts_cluster and dts_cluster.worker_nodes:
+            return list(dts_cluster.worker_nodes)
+    deploy = migrate_plan.deploy_subflow_inp
+    if deploy and deploy.worker_hosts:
+        return [
+            {"ip": h.ip, "bk_cloud_id": h.bk_cloud_id, "name": h.name or f"worker-{idx + 1}"}
+            for idx, h in enumerate(deploy.worker_hosts)
+        ]
+    return []
 
 
 def _append_grant_target(targets: dict[str, DtsGrantTarget], cluster: Cluster, ip: str, port: int):
@@ -329,9 +455,19 @@ def build_create_source_request(
 ) -> CreateSourceRequest:
     host, port = resolve_source_endpoint(source_spec, cluster)
     cluster_type = "mysql"
-    # Source.cluster_type=spider 表示上游是 Spider 分片语义；实际连接点仍是 Remote 存储
+    spider: SpiderInfo | None = None
+    # TenDBCluster：仅在已填分片元数据时下发 spider-shard + SpiderInfo（由 expand helper 填充）
+    # 未展开时保持兼容：cluster_type=spider、无 SpiderInfo（现网 HA 单据不会走 Cluster 源）
     if cluster.cluster_type == ClusterType.TenDBCluster.value:
-        cluster_type = "spider"
+        if source_spec.shard_index is not None and source_spec.shard_count is not None:
+            cluster_type = "spider-shard"
+            spider = SpiderInfo(
+                cluster_id=source_spec.spider_cluster_id or cluster.immute_domain,
+                shard_index=int(source_spec.shard_index),
+                shard_count=int(source_spec.shard_count),
+            )
+        else:
+            cluster_type = "spider"
     enable_gtid = decide_enable_gtid(
         source_host=host,
         source_port=port,
@@ -339,6 +475,7 @@ def build_create_source_request(
         target_cluster=target_cluster,
         migrate_type=migrate_type,
     )
+    bind_worker = worker_name or source_spec.worker_name or None
     source = Source(
         source_name=source_spec.source_name,
         host=host,
@@ -348,8 +485,9 @@ def build_create_source_request(
         enable_gtid=enable_gtid,
         enable=True,
         cluster_type=cluster_type,
+        spider=spider,
     )
-    return CreateSourceRequest(source=source, worker_name=worker_name)
+    return CreateSourceRequest(source=source, worker_name=bind_worker)
 
 
 def _build_ha_target_config(cluster: Cluster, user: str, password: str) -> TargetConfig:

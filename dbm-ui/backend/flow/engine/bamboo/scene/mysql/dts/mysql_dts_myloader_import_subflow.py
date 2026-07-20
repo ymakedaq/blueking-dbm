@@ -12,27 +12,23 @@ from dataclasses import asdict
 
 from django.utils.translation import gettext as _
 
-from backend import env
-from backend.db_package.models import Package
-from backend.flow.consts import MediumEnum
 from backend.flow.engine.bamboo.scene.common.builder import SubBuilder
 from backend.flow.engine.bamboo.scene.mysql.common.mysql_restore_download_sub_flow import (
     mysql_restore_download_sub_flow,
 )
+from backend.flow.engine.bamboo.scene.mysql.common.install_dbbackup_v2_subflow import (
+    install_dbbackup_v2_subflow,
+)
 from backend.flow.plugins.components.collections.common.download_backup_client import DownloadBackupClientComponent
-from backend.flow.plugins.components.collections.mysql.dts.base_shell import MysqlDtsExecShellComponent
 from backend.flow.plugins.components.collections.mysql.dts.migrate.create_task import MysqlDtsCreateTaskComponent
 from backend.flow.plugins.components.collections.mysql.dts.migrate.resolve_logical_backup import (
     MysqlDtsResolveLogicalBackupComponent,
 )
 from backend.flow.plugins.components.collections.mysql.dts.migrate.start_task import MysqlDtsStartTaskComponent
-from backend.flow.plugins.components.collections.mysql.trans_flies import TransFileComponent
 from backend.flow.utils.common_act_dataclass import DownloadBackupClientKwargs
 from backend.flow.utils.mysql.dts.backup_helper import resolve_task_logical_backups, resolved_backup_asdict
 from backend.flow.utils.mysql.dts.constants import DEFAULT_MYLOADER_PATH
 from backend.flow.utils.mysql.dts.migrate_plan import DtsMigratePlan, DtsTaskSpec
-from backend.flow.utils.mysql.dts.script_template import ensure_myloader_binary_template
-from backend.flow.utils.mysql.mysql_act_dataclass import DownloadMediaKwargs
 from backend.ticket.builders.common.constants import MySQLBackupSource
 
 
@@ -51,11 +47,6 @@ def _resolve_bk_cloud_id(migrate_plan: DtsMigratePlan) -> int:
     if deploy:
         return int(deploy.bk_cloud_id)
     return 0
-
-
-def _dbbackup_file_list() -> list[str]:
-    pkg = Package.get_latest_package(version=MediumEnum.Latest, pkg_type=MediumEnum.DbBackup)
-    return [f"{env.BKREPO_PROJECT}/{env.BKREPO_BUCKET}/{pkg.path}"]
 
 
 def _add_download_acts(sub: SubBuilder, *, root_id: str, uid: str, bk_cloud_id: int, resolved_list) -> None:
@@ -110,14 +101,16 @@ def mysql_dts_myloader_import_subflow(
     if not worker_ips:
         raise ValueError(_("myloader 导入未解析到任何 DTS Worker IP"))
 
+    flow_data = {
+        "bk_biz_id": bk_biz_id,
+        "ticket_id": ticket_id,
+        "creator": creator,
+        "uid": str(ticket_id),
+    }
+
     sub = SubBuilder(
         root_id=root_id,
-        data={
-            "bk_biz_id": bk_biz_id,
-            "ticket_id": ticket_id,
-            "creator": creator,
-            "uid": str(ticket_id),
-        },
+        data=flow_data,
     )
 
     sub.add_act(
@@ -153,26 +146,14 @@ def mysql_dts_myloader_import_subflow(
         resolved_list=resolved_list,
     )
 
-    # 下发 dbbackup 介质并解压，确保 Worker 上存在 myloader
-    sub.add_act(
-        act_name=_("下发 dbbackup/myloader 介质"),
-        act_component_code=TransFileComponent.code,
-        kwargs=asdict(
-            DownloadMediaKwargs(
-                bk_cloud_id=bk_cloud_id,
-                exec_ip=worker_ips,
-                file_list=_dbbackup_file_list(),
-            )
-        ),
-    )
-    sub.add_act(
-        act_name=_("解压并就绪 myloader"),
-        act_component_code=MysqlDtsExecShellComponent.code,
-        kwargs={
-            "exec_targets": [{"ip": ip, "bk_cloud_id": bk_cloud_id} for ip in worker_ips],
-            "shell_script": ensure_myloader_binary_template,
-            "bk_cloud_id": bk_cloud_id,
-        },
+    sub.add_sub_pipeline(
+        sub_flow=install_dbbackup_v2_subflow(
+            root_id=root_id,
+            data=flow_data,
+            bk_cloud_id=bk_cloud_id,
+            exec_ips=worker_ips,
+            sub_name=_("重装 V2 备份程序"),
+        )
     )
 
     if include_create_start:

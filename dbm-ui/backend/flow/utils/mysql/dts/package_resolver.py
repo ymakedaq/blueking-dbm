@@ -25,6 +25,9 @@ from backend.flow.utils.mysql.dts.constants import MYSQL_DTS_VERSION_SERIES
 logger = logging.getLogger("flow")
 
 _DTS_PHASE_PRIORITY = [VersionPhase.ALPHA.value, VersionPhase.RELEASE.value]
+# 与 mysql_rollback_exercise 的 V2 备份介质 series 保持一致
+_MYSQL_DBBACKUP_VERSION_SERIES = "beta"
+_DBBACKUP_PHASE_PRIORITY = [VersionPhase.ALPHA.value, VersionPhase.RELEASE.value]
 
 
 def _get_v2_package_by_phase(
@@ -56,6 +59,36 @@ def _get_v2_package_by_phase(
             pkg.db_version.recommend if pkg.db_version else False,
             pkg.priority,
         ),
+    )
+
+
+def resolve_v2_dbbackup_package(
+    *,
+    pkg_type: str = MediumEnum.DbBackup.value,
+    version_series: str = _MYSQL_DBBACKUP_VERSION_SERIES,
+    phase_priority: list[str] | None = None,
+    permit_os_type: str = "Linux",
+) -> Package:
+    """解析 V2 dbbackup 介质包（对齐 mysql_rollback_exercise 选包逻辑）。"""
+    for phase in phase_priority or _DBBACKUP_PHASE_PRIORITY:
+        pkg = _get_v2_package_by_phase(
+            db_type=DBType.MySQL.value,
+            pkg_type=pkg_type,
+            version_series=version_series,
+            phase=phase,
+            permit_os_type=permit_os_type,
+        )
+        if pkg:
+            logger.info(
+                _("V2 备份包命中 series={}, phase={}, pkg_type={}, package_id={}").format(
+                    version_series, phase, pkg_type, pkg.id
+                )
+            )
+            return pkg
+    raise DBPackageBaseException(
+        _("未找到 V2 备份介质: series={}, pkg_type={}, permit_os_type={}").format(
+            version_series, pkg_type, permit_os_type
+        )
     )
 
 

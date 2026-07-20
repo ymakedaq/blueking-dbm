@@ -72,6 +72,11 @@ class SourceSpec:
     source_instance_role: str | None = None
     source_host: str | None = None
     myloader: MyloaderSpec | None = None
+    # 内部字段：供 expand_tendbcluster_source_specs / assign_source_workers 使用，不由现网 HA 单据填写
+    shard_index: int | None = None
+    shard_count: int | None = None
+    spider_cluster_id: str = ""
+    worker_name: str = ""
 
 
 @dataclass
@@ -133,7 +138,7 @@ def _parse_myloader_spec(raw: dict | None) -> MyloaderSpec | None:
     )
 
 
-def _copy_myloader_spec(spec: MyloaderSpec | None) -> MyloaderSpec | None:
+def copy_myloader_spec(spec: MyloaderSpec | None) -> MyloaderSpec | None:
     if spec is None:
         return None
     return MyloaderSpec(
@@ -151,6 +156,10 @@ def _copy_myloader_spec(spec: MyloaderSpec | None) -> MyloaderSpec | None:
         dest_worker_ip=spec.dest_worker_ip,
         shard_id=spec.shard_id,
     )
+
+
+# 兼容旧名
+_copy_myloader_spec = copy_myloader_spec
 
 
 def _parse_dts_task_config(raw: dict | None) -> DtsTaskConfig:
@@ -291,14 +300,140 @@ def _wrap_plan(details: dict[str, Any], task_specs: list[DtsTaskSpec], worker_co
         recycle_dts_hosts=details.get("recycle_dts_hosts", True),
         dts_task_config=_parse_dts_task_config(details.get("dts_task_config")),
         task_specs=task_specs,
-        worker_count_required=max(worker_count, details.get("worker_count_required", worker_count)),
+        worker_count_required=max(worker_count, details.get("worker_count_required") or worker_count),
         bk_biz_id=details.get("bk_biz_id", 0),
         bk_cloud_id=details.get("bk_cloud_id", 0),
     )
 
 
+def _is_layered_ticket_details(details: dict[str, Any]) -> bool:
+    """是否为分层单据契约（dts_resource / migrate / task）。"""
+    return "dts_resource" in details or "migrate" in details
+
+
+def normalize_migrate_ticket_details(details: dict[str, Any]) -> dict[str, Any]:
+    """将分层单据 details 归一化为 build_migrate_plan 使用的扁平结构。
+
+    分层契约：
+    - dts_resource: DTS 集群来源与生命周期
+    - migrate: 拓扑与源/目标
+    - task: 任务运行参数
+    """
+    from django.utils.translation import gettext as _
+
+    if not _is_layered_ticket_details(details):
+        return details
+
+    dts_resource = details.get("dts_resource") or {}
+    migrate = details.get("migrate") or {}
+    task = details.get("task") or {}
+
+    mode = dts_resource.get("mode") or DtsLifecycleMode.USE_EXISTING.value
+    if mode == DtsLifecycleMode.USE_EXISTING.value:
+        if not dts_resource.get("cluster_id"):
+            raise ValueError(_("dts_resource.mode=use_existing 时必须提供 cluster_id"))
+        auto_deploy = False
+        dts_cluster_id = dts_resource.get("cluster_id")
+        deploy_subflow = None
+        default_cleanup = False
+    elif mode in (DtsLifecycleMode.DEPLOY_EPHEMERAL.value, DtsLifecycleMode.DEPLOY_PERSISTENT.value):
+        deploy = dts_resource.get("deploy")
+        if not deploy:
+            raise ValueError(_("dts_resource.mode={} 时必须提供 deploy").format(mode))
+        auto_deploy = True
+        dts_cluster_id = dts_resource.get("cluster_id")
+        deploy_subflow = deploy
+        default_cleanup = mode == DtsLifecycleMode.DEPLOY_EPHEMERAL.value
+    else:
+        raise ValueError(_("不支持的 dts_resource.mode: {}").format(mode))
+
+    topology = migrate.get("topology")
+    if not topology:
+        raise ValueError(_("migrate.topology 不能为空"))
+
+    flat: dict[str, Any] = {
+        "migrate_topology": topology,
+        "dts_cluster_id": dts_cluster_id,
+        "auto_deploy_dts": auto_deploy,
+        "dts_lifecycle": mode,
+        "cleanup_after_migrate": dts_resource.get("cleanup_after_migrate", default_cleanup),
+        "recycle_dts_hosts": dts_resource.get("recycle_hosts", True),
+        "bk_biz_id": details.get("bk_biz_id", 0),
+        "bk_cloud_id": details.get("bk_cloud_id") or (deploy_subflow or {}).get("bk_cloud_id", 0),
+    }
+    if details.get("migrate_type"):
+        flat["migrate_type"] = details["migrate_type"]
+    if details.get("ticket_id") is not None:
+        flat["ticket_id"] = details["ticket_id"]
+    if details.get("worker_count_required") is not None:
+        flat["worker_count_required"] = details["worker_count_required"]
+    if deploy_subflow is not None:
+        flat["deploy_subflow"] = deploy_subflow
+
+    # migrate 拓扑块 → 旧 one_to_one / many_to_one / one_to_many
+    if topology == MigrateTopology.ONE_TO_ONE.value:
+        block = migrate.get("one_to_one") or {}
+        flat["one_to_one"] = {
+            "task_name": block.get("task_name"),
+            "src_info": _normalize_source_block(block.get("source") or {}),
+            "dst_info": _normalize_target_block(block.get("target") or {}),
+        }
+    elif topology == MigrateTopology.MANY_TO_ONE.value:
+        block = migrate.get("many_to_one") or {}
+        flat["many_to_one"] = {
+            "task_name": block.get("task_name"),
+            "src_infos": [_normalize_source_block(s) for s in (block.get("sources") or [])],
+            "dst_info": _normalize_target_block(block.get("target") or {}),
+        }
+    elif topology == MigrateTopology.ONE_TO_MANY.value:
+        block = migrate.get("one_to_many") or {}
+        flat["one_to_many"] = {
+            "src_info": _normalize_source_block(block.get("source") or {}),
+            "dst_infos": [_normalize_target_block(t) for t in (block.get("targets") or [])],
+        }
+    else:
+        raise ValueError(_("不支持的 migrate.topology: {}").format(topology))
+
+    full_load = task.get("full_load") or {}
+    engine_options = task.get("engine_options") or {}
+    flat["dts_task_config"] = {
+        "task_mode": task.get("task_mode", "all"),
+        "enable_validator": task.get("enable_validator", False),
+        "shard_mode": task.get("shard_mode", ""),
+        "on_duplicate": task.get("on_duplicate", "replace"),
+        "meta_schema": task.get("meta_schema", "dm_meta"),
+        "ignore_checking_items": task.get("ignore_checking_items", []),
+        "full_migrate": engine_options.get("full_migrate", {}),
+        "incr_migrate": engine_options.get("incr_migrate", {}),
+        "full_load_engine": full_load.get("engine", FullLoadEngine.BUILTIN.value),
+        "myloader": full_load.get("myloader"),
+    }
+    return flat
+
+
+def _normalize_source_block(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "cluster_id": raw.get("cluster_id"),
+        "source_name": raw.get("source_name", ""),
+        "sync_scope": raw.get("sync_scope") or {},
+        "source_instance_id": raw.get("source_instance_id"),
+        "source_instance_role": raw.get("source_instance_role"),
+        "source_host": raw.get("source_host"),
+        "myloader": raw.get("myloader"),
+    }
+
+
+def _normalize_target_block(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "cluster_id": raw.get("cluster_id"),
+        "task_name": raw.get("task_name"),
+        "sync_scope": raw.get("sync_scope") or {},
+    }
+
+
 def build_migrate_plan(ticket_details: dict[str, Any]) -> DtsMigratePlan:
-    topology = ticket_details["migrate_topology"]
+    details = normalize_migrate_ticket_details(ticket_details) if _is_layered_ticket_details(ticket_details) else ticket_details
+    topology = details["migrate_topology"]
     builders = {
         MigrateTopology.ONE_TO_ONE.value: _build_one_to_one_plan,
         MigrateTopology.MANY_TO_ONE.value: _build_many_to_one_plan,
@@ -307,4 +442,4 @@ def build_migrate_plan(ticket_details: dict[str, Any]) -> DtsMigratePlan:
     builder = builders.get(topology)
     if not builder:
         raise ValueError(f"unsupported topology: {topology}")
-    return builder(ticket_details)
+    return builder(details)
