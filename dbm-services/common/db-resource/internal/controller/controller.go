@@ -78,8 +78,17 @@ func (c *BackStageHandler) RegisterRouter(engine *gin.Engine) {
 		r.POST("/cc/async", c.RunAsyncCmdb)
 		r.POST("/cc/sync/os/info", c.SyncOsInfo)
 		r.POST("/cc/sync/netdevice", c.FlushNetDeviceInfo)
+		r.POST("/cc/dissolve/host/check", c.DissolveHostCheck)
 		// r.POST("/cc/sync/disk", manage.RefreshDiskInfo)
 	}
+}
+
+func (c BackStageHandler) DissolveHostCheck(r *gin.Context) {
+	err := task.DissolveHostCheck()
+	if err != nil {
+		logger.Error("SyncFaultHosts failed %v", err)
+	}
+	c.SendResponse(r, nil, "success")
 }
 
 // RunModuleCheck run module check
