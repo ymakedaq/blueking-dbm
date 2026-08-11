@@ -46,10 +46,32 @@ class TestDbConsoleDumpFlowValidatorInject(SimpleTestCase):
         self.assertIn("UNION", err["errors"])
         mock_inject.assert_called_once_with(
             params={
-                "sql": "SELECT * FROM `db1`.`t1` WHERE (111 union select * from t2)",
+                "sql": "SELECT * FROM `db1`.`t1` WHERE 111 union select * from t2",
                 "judge_subquery_diff_table": True,
-            }
+            },
+            timeout=DbConsoleDumpFlowValidator.INJECT_CHECK_TIMEOUT,
+            retry_times=DbConsoleDumpFlowValidator.INJECT_CHECK_RETRY_TIMES,
         )
+
+    def test_inject_and_explain_share_same_sql(self):
+        """inject 预检与 EXPLAIN 必须基于同一条 SQL。"""
+        validator = _make_validator({})
+        sql = validator._build_where_select_sql("db1", "t1", "id > 1")
+        self.assertEqual(sql, "SELECT * FROM `db1`.`t1` WHERE id > 1")
+
+        with patch(
+            "backend.flow.engine.bamboo.scene.mysql.validate.dbconsole_dump_validator.DRSApi.rpc"
+        ) as mock_rpc, patch(
+            "backend.flow.engine.bamboo.scene.mysql.validate."
+            "dbconsole_dump_validator.SQLSimulationApi.syntax_check_inject",
+            return_value={"is_inject": False},
+        ) as mock_inject:
+            mock_rpc.return_value = [{"error_msg": "", "cmd_results": [{"error_msg": ""}]}]
+            validator._check_where_inject("id > 1", ("db1", "t1"))
+            validator._explain_batch("127.0.0.1:20000", 0, "id > 1", [("db1", "t1")])
+
+        self.assertEqual(mock_inject.call_args[1]["params"]["sql"], sql)
+        self.assertEqual(mock_rpc.call_args[0][0]["cmds"], ["EXPLAIN {}".format(sql)])
 
     @patch(
         "backend.flow.engine.bamboo.scene.mysql.validate.dbconsole_dump_validator.SQLSimulationApi.syntax_check_inject",

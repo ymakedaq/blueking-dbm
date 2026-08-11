@@ -84,7 +84,7 @@ class DbConsoleDumpFlowValidator(MysqlBaseValidator):
     def _check_where_inject(self, where: str, target: Tuple[str, str]) -> Optional[dict]:
         """用第一张导出表拼一条 SQL，调用一次 inject 检查；服务不可用则失败放行。"""
         db, table = target
-        sql = "SELECT * FROM {}.{} WHERE ({})".format(self._quote_ident(db), self._quote_ident(table), where)
+        sql = self._build_where_select_sql(db, table, where)
         try:
             result = SQLSimulationApi.syntax_check_inject(
                 params={"sql": sql, "judge_subquery_diff_table": True},
@@ -191,10 +191,7 @@ class DbConsoleDumpFlowValidator(MysqlBaseValidator):
 
     def _explain_batch(self, address: str, bk_cloud_id: int, where: str, batch: List[Tuple[str, str]]) -> List[dict]:
         """单批 DRS EXPLAIN。"""
-        cmds = [
-            "EXPLAIN SELECT * FROM {}.{} WHERE {}".format(self._quote_ident(db), self._quote_ident(table), where)
-            for db, table in batch
-        ]
+        cmds = ["EXPLAIN {}".format(self._build_where_select_sql(db, table, where)) for db, table in batch]
         try:
             res = DRSApi.rpc(
                 {
@@ -229,6 +226,11 @@ class DbConsoleDumpFlowValidator(MysqlBaseValidator):
             if cmd_err:
                 errors.append(self._build_where_error(_("表 {}.{} 的 where 条件不合法: {}").format(db, table, cmd_err)))
         return errors
+
+    @classmethod
+    def _build_where_select_sql(cls, db: str, table: str, where: str) -> str:
+        """inject 预检与 EXPLAIN 共用同一条 SQL，语义对齐 mysqldump -w（不加括号）。"""
+        return "SELECT * FROM {}.{} WHERE {}".format(cls._quote_ident(db), cls._quote_ident(table), where)
 
     @staticmethod
     def _quote_ident(name: str) -> str:
