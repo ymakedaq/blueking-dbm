@@ -41,3 +41,12 @@ class SQLSimulationApiMock:
                 "error_line": 0,
             }
         ]
+
+    @classmethod
+    def parse_file_statement(cls, *args, **kwargs):
+        return {
+            "command_counts": {},
+            "alter_tables": [],
+            "drop_tables": [],
+            "truncate_tables": [],
+        }
