@@ -11,10 +11,10 @@
 package manage
 
 import (
-	"strings"
 	"testing"
 
 	"dbm-services/common/db-resource/internal/config"
+	"dbm-services/common/db-resource/internal/model"
 	"dbm-services/common/db-resource/internal/svr/bk"
 )
 
@@ -28,27 +28,28 @@ func ext3DataDiskMap() map[string]*bk.ShellResCollection {
 	}
 }
 
-func TestMaybeCheckExt3DataDisk_DisabledSkip(t *testing.T) {
+func TestMaybeCollectExt3DataDiskIps_DisabledSkip(t *testing.T) {
 	orig := config.AppConfig.CheckExt3DataDisk
 	config.AppConfig.CheckExt3DataDisk = false
 	t.Cleanup(func() { config.AppConfig.CheckExt3DataDisk = orig })
 
-	if err := maybeCheckExt3DataDisk(ext3DataDiskMap()); err != nil {
-		t.Fatalf("disabled check should skip, got: %v", err)
+	if hits := maybeCollectExt3DataDiskIps(ext3DataDiskMap()); len(hits) != 0 {
+		t.Fatalf("disabled check should skip, got: %v", hits)
 	}
 }
 
-func TestMaybeCheckExt3DataDisk_EnabledReject(t *testing.T) {
+func TestMaybeCollectExt3DataDiskIps_EnabledHit(t *testing.T) {
 	orig := config.AppConfig.CheckExt3DataDisk
 	config.AppConfig.CheckExt3DataDisk = true
 	t.Cleanup(func() { config.AppConfig.CheckExt3DataDisk = orig })
 
-	if err := maybeCheckExt3DataDisk(ext3DataDiskMap()); err == nil {
-		t.Fatal("enabled check should reject ext3 data disk")
+	hits := maybeCollectExt3DataDiskIps(ext3DataDiskMap())
+	if _, ok := hits["127.0.0.1"]; !ok {
+		t.Fatalf("enabled check should collect ext3 ip, got: %v", hits)
 	}
 }
 
-func TestCheckExt3DataDisk_RootExt3Allowed(t *testing.T) {
+func TestCollectExt3DataDiskIps_RootExt3Ignored(t *testing.T) {
 	diskMap := map[string]*bk.ShellResCollection{
 		"127.0.0.1": {
 			Disk: []bk.DiskInfo{
@@ -57,12 +58,12 @@ func TestCheckExt3DataDisk_RootExt3Allowed(t *testing.T) {
 			},
 		},
 	}
-	if err := checkExt3DataDisk(diskMap); err != nil {
-		t.Fatalf("root ext3 should be ignored, got error: %v", err)
+	if hits := collectExt3DataDiskIps(diskMap); len(hits) != 0 {
+		t.Fatalf("root ext3 should be ignored, got: %v", hits)
 	}
 }
 
-func TestCheckExt3DataDisk_DataExt3Rejected(t *testing.T) {
+func TestCollectExt3DataDiskIps_DataExt3Hit(t *testing.T) {
 	diskMap := map[string]*bk.ShellResCollection{
 		"127.0.0.1": {
 			Disk: []bk.DiskInfo{
@@ -71,39 +72,35 @@ func TestCheckExt3DataDisk_DataExt3Rejected(t *testing.T) {
 			},
 		},
 	}
-	err := checkExt3DataDisk(diskMap)
-	if err == nil {
-		t.Fatal("expected error when /data is ext3")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "导入失败") || !strings.Contains(msg, "均未入库") {
-		t.Fatalf("error should be explicit import failure message, got: %v", err)
-	}
-	if !strings.Contains(msg, "127.0.0.1") || !strings.Contains(msg, "/data") {
-		t.Fatalf("error should contain ip and mount point, got: %v", err)
+	hits := collectExt3DataDiskIps(diskMap)
+	if _, ok := hits["127.0.0.1"]; !ok {
+		t.Fatalf("expected 127.0.0.1 when /data is ext3, got: %v", hits)
 	}
 }
 
-func TestCheckExt3DataDisk_Data1Data2Ext3Rejected(t *testing.T) {
+func TestCollectExt3DataDiskIps_Data1Data2Ext3Hit(t *testing.T) {
 	diskMap := map[string]*bk.ShellResCollection{
 		"127.0.0.1": {
 			Disk: []bk.DiskInfo{
 				{MountPoint: "/data1", DiskDetail: bk.DiskDetail{FileType: "ext3"}},
+			},
+		},
+		"127.0.0.2": {
+			Disk: []bk.DiskInfo{
 				{MountPoint: "/data2", DiskDetail: bk.DiskDetail{FileType: "EXT3"}},
 			},
 		},
 	}
-	err := checkExt3DataDisk(diskMap)
-	if err == nil {
-		t.Fatal("expected error when /data1 or /data2 is ext3")
+	hits := collectExt3DataDiskIps(diskMap)
+	if _, ok := hits["127.0.0.1"]; !ok {
+		t.Fatalf("expected 127.0.0.1 for /data1, got: %v", hits)
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "/data1") || !strings.Contains(msg, "/data2") {
-		t.Fatalf("error should list /data1 and /data2, got: %v", err)
+	if _, ok := hits["127.0.0.2"]; !ok {
+		t.Fatalf("expected 127.0.0.2 for /data2, got: %v", hits)
 	}
 }
 
-func TestCheckExt3DataDisk_CaseInsensitive(t *testing.T) {
+func TestCollectExt3DataDiskIps_CaseInsensitive(t *testing.T) {
 	diskMap := map[string]*bk.ShellResCollection{
 		"127.0.0.2": {
 			Disk: []bk.DiskInfo{
@@ -111,12 +108,12 @@ func TestCheckExt3DataDisk_CaseInsensitive(t *testing.T) {
 			},
 		},
 	}
-	if err := checkExt3DataDisk(diskMap); err == nil {
-		t.Fatal("expected error when file_type is EXT3")
+	if hits := collectExt3DataDiskIps(diskMap); len(hits) != 1 {
+		t.Fatalf("expected hit when file_type is EXT3, got: %v", hits)
 	}
 }
 
-func TestCheckExt3DataDisk_BatchFailOnOneViolation(t *testing.T) {
+func TestCollectExt3DataDiskIps_MixedBatchOnlyViolatingIP(t *testing.T) {
 	diskMap := map[string]*bk.ShellResCollection{
 		"127.0.0.1": {
 			Disk: []bk.DiskInfo{
@@ -129,26 +126,53 @@ func TestCheckExt3DataDisk_BatchFailOnOneViolation(t *testing.T) {
 			},
 		},
 	}
-	err := checkExt3DataDisk(diskMap)
-	if err == nil {
-		t.Fatal("expected batch error when one host has ext3 data disk")
+	hits := collectExt3DataDiskIps(diskMap)
+	if _, ok := hits["127.0.0.2"]; !ok {
+		t.Fatalf("expected violating ip 127.0.0.2, got: %v", hits)
 	}
-	if !strings.Contains(err.Error(), "127.0.0.2") {
-		t.Fatalf("error should contain violating ip, got: %v", err)
+	if _, ok := hits["127.0.0.1"]; ok {
+		t.Fatalf("non-ext3 host should not be collected, got: %v", hits)
 	}
 }
 
-func TestCheckExt3DataDisk_EmptyOrNilHostSkipped(t *testing.T) {
-	if err := checkExt3DataDisk(nil); err != nil {
-		t.Fatalf("nil map should pass, got: %v", err)
+func TestCollectExt3DataDiskIps_EmptyOrNilHostSkipped(t *testing.T) {
+	if hits := collectExt3DataDiskIps(nil); len(hits) != 0 {
+		t.Fatalf("nil map should be empty, got: %v", hits)
 	}
-	if err := checkExt3DataDisk(map[string]*bk.ShellResCollection{}); err != nil {
-		t.Fatalf("empty map should pass, got: %v", err)
+	if hits := collectExt3DataDiskIps(map[string]*bk.ShellResCollection{}); len(hits) != 0 {
+		t.Fatalf("empty map should be empty, got: %v", hits)
 	}
 	diskMap := map[string]*bk.ShellResCollection{
 		"127.0.0.1": nil,
 	}
-	if err := checkExt3DataDisk(diskMap); err != nil {
-		t.Fatalf("nil host shell result should pass, got: %v", err)
+	if hits := collectExt3DataDiskIps(diskMap); len(hits) != 0 {
+		t.Fatalf("nil host shell result should be empty, got: %v", hits)
+	}
+}
+
+func TestApplyExt3UnavailableStatus(t *testing.T) {
+	el := model.TbRpDetail{IP: "127.0.0.1", Status: model.Unused}
+	applyExt3UnavailableStatus(&el, map[string]struct{}{"127.0.0.1": {}})
+	if el.Status != model.Unavailable {
+		t.Fatalf("expected Unavailable, got %s", el.Status)
+	}
+
+	keep := model.TbRpDetail{IP: "127.0.0.2", Status: model.Unused}
+	applyExt3UnavailableStatus(&keep, map[string]struct{}{"127.0.0.1": {}})
+	if keep.Status != model.Unused {
+		t.Fatalf("non-hit host should stay Unused, got %s", keep.Status)
+	}
+	applyExt3UnavailableStatus(nil, map[string]struct{}{"127.0.0.1": {}})
+}
+
+func TestImportedExt3Ips(t *testing.T) {
+	elems := []model.TbRpDetail{
+		{IP: "127.0.0.2", Status: model.Unavailable},
+		{IP: "127.0.0.1", Status: model.Unused},
+		{IP: "127.0.0.3", Status: model.Unavailable},
+	}
+	got := importedExt3Ips(elems)
+	if len(got) != 2 || got[0] != "127.0.0.2" || got[1] != "127.0.0.3" {
+		t.Fatalf("expected sorted unavailable ips, got %v", got)
 	}
 }

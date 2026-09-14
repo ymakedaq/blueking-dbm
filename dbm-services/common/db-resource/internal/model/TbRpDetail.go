@@ -41,6 +41,8 @@ const (
 	FaultHazard = "FaultHazard"
 	// Dissolved 待裁撤
 	Dissolved = "Dissolved"
+	// Unavailable 不可用（如数据盘 ext3），不可申领，待异步任务转入待回收
+	Unavailable = "Unavailable"
 )
 
 const (

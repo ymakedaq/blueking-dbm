@@ -13,6 +13,7 @@ package manage
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -116,6 +117,7 @@ type ImportHostResp struct {
 	GetDiskInfoJobErrMsg string            `json:"get_disk_job_errmsg"`
 	SearchDiskErrInfo    map[string]string `json:"search_disk_err_info"`
 	NotFoundInCCHosts    []string          `json:"not_found_in_cc_hosts"`
+	Ext3UnavailableHosts []string          `json:"ext3_unavailable_hosts"`
 }
 
 func (p ImportMachParam) transParamToBytes() (labelJson json.RawMessage, err error) {
@@ -175,10 +177,7 @@ func DoImport(param ImportMachParam, requestId string) (resp *ImportHostResp, er
 	}
 	resp.SearchDiskErrInfo = diskResp.IpFailedLogMap
 	resp.NotFoundInCCHosts = notFoundHosts
-	if err = maybeCheckExt3DataDisk(diskResp.IpLogContentMap); err != nil {
-		logger.Error("ext3 data disk check failed: %s", err.Error())
-		return resp, err
-	}
+	ext3Ips := maybeCollectExt3DataDiskIps(diskResp.IpLogContentMap)
 	labelJson, err := param.transParamToBytes()
 	if err != nil {
 		return resp, err
@@ -209,8 +208,10 @@ func DoImport(param ImportMachParam, requestId string) (resp *ImportHostResp, er
 			diskDetails = v.DatadiskList
 		}
 		el.SetMore(h.InnerIP, diskResp.IpLogContentMap, diskDetails)
+		applyExt3UnavailableStatus(&el, ext3Ips)
 		elems = append(elems, el)
 	}
+	resp.Ext3UnavailableHosts = importedExt3Ips(elems)
 	if err = model.DB.Self.Table(model.TbRpDetailName()).Create(elems).Error; err != nil {
 		logger.Error("failed to save resource: %s", err.Error())
 		return resp, err
@@ -416,11 +417,7 @@ func (c *MachineResourceHandler) ImportMachineWithDiffInfo(r *rf.Context) {
 			c.SendResponse(r, err, err)
 			return
 		}
-		if err = maybeCheckExt3DataDisk(diskResp.IpLogContentMap); err != nil {
-			logger.Error("ext3 data disk check failed: %s", err.Error())
-			c.SendResponse(r, err, err.Error())
-			return
-		}
+		ext3Ips := maybeCollectExt3DataDiskIps(diskResp.IpLogContentMap)
 		hostsMap := lo.SliceToMap(targetHosts, func(item string) (string, struct{}) { return item, struct{}{} })
 		for _, emptyHost := range notFoundHosts {
 			delete(hostsMap, emptyHost)
@@ -455,8 +452,12 @@ func (c *MachineResourceHandler) ImportMachineWithDiffInfo(r *rf.Context) {
 				diskDetailInfo = v.DatadiskList
 			}
 			el.SetMore(h.InnerIP, diskResp.IpLogContentMap, diskDetailInfo)
+			applyExt3UnavailableStatus(&el, ext3Ips)
 			elems = append(elems, el)
 		}
+	}
+	if unavailableIps := importedExt3Ips(elems); len(unavailableIps) > 0 {
+		logger.Info("import with ext3 data disk, mark Unavailable: %v", unavailableIps)
 	}
 	if err := model.DB.Self.Table(model.TbRpDetailName()).Create(elems).Error; err != nil {
 		c.SendResponse(r, err, err)
@@ -465,22 +466,23 @@ func (c *MachineResourceHandler) ImportMachineWithDiffInfo(r *rf.Context) {
 	c.SendResponse(r, nil, "success")
 }
 
-// maybeCheckExt3DataDisk 按配置决定是否执行 ext3 数据盘检查
-func maybeCheckExt3DataDisk(diskMap map[string]*bk.ShellResCollection) error {
+// maybeCollectExt3DataDiskIps 按配置决定是否收集数据盘为 ext3 的主机 IP
+func maybeCollectExt3DataDiskIps(diskMap map[string]*bk.ShellResCollection) map[string]struct{} {
 	if !config.AppConfig.CheckExt3DataDisk {
 		logger.Info("skip ext3 data disk check because checkExt3DataDisk is disabled")
 		return nil
 	}
-	return checkExt3DataDisk(diskMap)
+	return collectExt3DataDiskIps(diskMap)
 }
 
-// checkExt3DataDisk 检查数据盘是否为 ext3：忽略根盘 "/"，其余挂载点（/data、/data1、/data2 等）
-// 若 file_type 大小写不敏感等于 ext3 则整批失败。主机未采到磁盘信息不拦截。
-func checkExt3DataDisk(diskMap map[string]*bk.ShellResCollection) error {
+// collectExt3DataDiskIps 收集数据盘为 ext3 的主机 IP：忽略根盘 "/"，其余挂载点
+// （/data、/data1、/data2 等）若 file_type 大小写不敏感等于 ext3 则记入集合。
+// 主机未采到磁盘信息不处理。
+func collectExt3DataDiskIps(diskMap map[string]*bk.ShellResCollection) map[string]struct{} {
+	hits := make(map[string]struct{})
 	if len(diskMap) == 0 {
-		return nil
+		return hits
 	}
-	var violations []string
 	for ip, shellRes := range diskMap {
 		if shellRes == nil {
 			continue
@@ -490,18 +492,33 @@ func checkExt3DataDisk(diskMap map[string]*bk.ShellResCollection) error {
 				continue
 			}
 			if strings.EqualFold(disk.FileType, "ext3") {
-				violations = append(violations,
-					fmt.Sprintf("IP[%s] 挂载点[%s] 文件系统[%s]", ip, disk.MountPoint, disk.FileType))
+				hits[ip] = struct{}{}
+				break
 			}
 		}
 	}
-	if len(violations) == 0 {
-		return nil
+	return hits
+}
+
+func applyExt3UnavailableStatus(el *model.TbRpDetail, ext3Ips map[string]struct{}) {
+	if el == nil {
+		return
 	}
-	return fmt.Errorf(
-		"导入失败：禁止数据盘使用 ext3 文件系统，本批机器均未入库，请将数据盘格式化为 ext4/xfs 后重试。违规详情：%s",
-		strings.Join(violations, "；"),
-	)
+	if _, ok := ext3Ips[el.IP]; ok {
+		el.Status = model.Unavailable
+		logger.Info("mark host Unavailable due to ext3 data disk, ip=%s bk_host_id=%d", el.IP, el.BkHostID)
+	}
+}
+
+func importedExt3Ips(elems []model.TbRpDetail) []string {
+	var ips []string
+	for _, el := range elems {
+		if el.Status == model.Unavailable {
+			ips = append(ips, el.IP)
+		}
+	}
+	sort.Strings(ips)
+	return ips
 }
 
 func getIpList(ss []HostInfo) (ips []string) {

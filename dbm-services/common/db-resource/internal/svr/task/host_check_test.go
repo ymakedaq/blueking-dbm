@@ -26,6 +26,7 @@ func restoreHostCheckDeps(t *testing.T) {
 		checkUworkFn = dbmapi.CheckHostHasUwork
 		resourceDeleteFn = dbmapi.ResourceDelete
 		listUnusedMachinesFn = listUnusedMachines
+		listUnavailableMachinesFn = listUnavailableMachines
 		markUnusedHostsFn = markUnusedHosts
 	})
 }

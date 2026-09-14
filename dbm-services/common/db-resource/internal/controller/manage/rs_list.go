@@ -61,7 +61,7 @@ type MachineResourceGetterInputParam struct {
 	StorageSpecs  []meta.DiskSpec    `json:"storage_spec"`
 	CreateTime    string             `json:"create_time"`
 	EmptyLabels   bool               `json:"empty_labels"`
-	// 资源状态过滤，默认 Unused；可传多个如 Unused/FaultHazard/Dissolved
+	// 资源状态过滤，默认 Unused；可传多个如 Unused/FaultHazard/Dissolved/Unavailable
 	Status []string `json:"status"`
 	// true,false,""
 	GseAgentAlive string `json:"gse_agent_alive"`

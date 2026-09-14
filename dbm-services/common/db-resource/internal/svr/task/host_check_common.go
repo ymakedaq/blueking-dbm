@@ -22,21 +22,31 @@ const (
 	hostCheckBatchSize     = 50
 	remarkDissolveRecycle  = "巡检发现待裁撤主机，自动转入待回收池"
 	remarkFaultToFaultPool = "巡检发现故障主机，自动转入故障池"
+	remarkExt3Recycle      = "导入发现数据盘为 ext3，自动转入待回收池"
 )
 
 var (
-	fetchSwitchesFn      = dbmapi.GetDissolvedUworkInfo
-	checkDissolvedFn     = dbmapi.CheckHostIsDissolved
-	checkUworkFn         = dbmapi.CheckHostHasUwork
-	resourceDeleteFn     = dbmapi.ResourceDelete
-	listUnusedMachinesFn = listUnusedMachines
-	markUnusedHostsFn    = markUnusedHosts
+	fetchSwitchesFn           = dbmapi.GetDissolvedUworkInfo
+	checkDissolvedFn          = dbmapi.CheckHostIsDissolved
+	checkUworkFn              = dbmapi.CheckHostHasUwork
+	resourceDeleteFn          = dbmapi.ResourceDelete
+	listUnusedMachinesFn      = listUnusedMachines
+	listUnavailableMachinesFn = listUnavailableMachines
+	markUnusedHostsFn         = markUnusedHosts
 )
 
 func listUnusedMachines() ([]model.TbRpDetail, error) {
 	var machines []model.TbRpDetail
 	err := model.DB.Self.Table(model.TbRpDetailName()).
 		Where("status = ?", model.Unused).
+		Find(&machines).Error
+	return machines, err
+}
+
+func listUnavailableMachines() ([]model.TbRpDetail, error) {
+	var machines []model.TbRpDetail
+	err := model.DB.Self.Table(model.TbRpDetailName()).
+		Where("status = ?", model.Unavailable).
 		Find(&machines).Error
 	return machines, err
 }

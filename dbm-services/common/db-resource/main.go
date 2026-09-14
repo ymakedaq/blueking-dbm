@@ -224,6 +224,17 @@ func registerCrontab(localcron *cron.Cron) {
 				logger.Info("dissolve host check end")
 			},
 		},
+		{
+			Name: "回收不可用主机",
+			Spec: "@every 1h",
+			Func: func() {
+				logger.Info("Start unavailable host recycle .....")
+				if err := task.UnavailableHostRecycle(); err != nil {
+					logger.Error("recycle unavailable hosts failed %s", err.Error())
+				}
+				logger.Info("unavailable host recycle end")
+			},
+		},
 	}
 	for _, cron := range localCrontabs {
 		if _, err := localcron.AddFunc(cron.Spec, cron.Func); err != nil {
