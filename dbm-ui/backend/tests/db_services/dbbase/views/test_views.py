@@ -151,11 +151,13 @@ class TestDBBaseViewSet:
         assert ClusterType.TenDBHA.value in data
         assert data[ClusterType.TenDBHA.value]["cluster_count"] >= 1
 
+    @patch("backend.db_services.dbbase.views.DBConfigApi.query_conf_item")
     @patch("backend.db_services.ipchooser.query.resource.ResourceQueryHelper.search_cc_cloud")
-    def test_query_biz_cluster_attrs(self, mock_search_cloud, test_cluster_with_entries):
+    def test_query_biz_cluster_attrs(self, mock_search_cloud, mock_query_conf, test_cluster_with_entries):
         """测试查询业务集群属性"""
         cluster = test_cluster_with_entries
         mock_search_cloud.return_value = {"0": {"bk_cloud_name": "Default Area"}}
+        mock_query_conf.return_value = {"content": {"mysqld": {"default_storage_engine": "InnoDB"}}}
 
         url = "/apis/dbbase/query_biz_cluster_attrs/"
         response = client.get(
@@ -163,13 +165,20 @@ class TestDBBaseViewSet:
             {
                 "bk_biz_id": cluster.bk_biz_id,
                 "cluster_type": ClusterType.TenDBHA.value,
-                "cluster_attrs": "bk_cloud_id,major_version",
+                "cluster_attrs": "bk_cloud_id,major_version,default_engine",
             },
         )
 
         assert response.status_code == 200
         data = response.json()["data"]
         assert isinstance(data, dict)
+        assert data["default_engine"] == [{"value": "InnoDB", "text": "InnoDB"}]
+        mock_query_conf.assert_called_once()
+        conf_params = mock_query_conf.call_args[0][0]
+        assert str(conf_params["level_name"]) == "module"
+        assert conf_params["level_value"] == str(cluster.db_module_id)
+        assert conf_params["conf_file"] == cluster.major_version
+        assert str(conf_params["conf_type"]) == "dbconf"
 
     def test_update_cluster_alias(self, test_cluster_with_entries):
         """测试更新集群别名"""

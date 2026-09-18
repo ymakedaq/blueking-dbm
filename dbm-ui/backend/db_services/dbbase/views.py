@@ -9,6 +9,7 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 """
 import json
+import logging
 from collections import defaultdict
 from typing import Dict, List, Set, Union
 
@@ -22,7 +23,8 @@ from backend import env
 from backend.bk_web import viewsets
 from backend.bk_web.pagination import AuditedLimitOffsetPagination
 from backend.bk_web.swagger import ResponseSwaggerAutoSchema, common_swagger_auto_schema
-from backend.components import BKBaseApi, DRSApi
+from backend.components import BKBaseApi, DBConfigApi, DRSApi
+from backend.components.dbconfig.constants import FormatType, LevelName
 from backend.configuration.constants import DBType
 from backend.db_dirty.models import DirtyMachine
 from backend.db_meta.enums import ClusterType, InstanceRole
@@ -83,6 +85,8 @@ from backend.db_services.ipchooser.query.resource import ResourceQueryHelper
 from backend.db_services.mongodb.cluster.handlers import ClusterServiceHandler as MongoClusterServiceHandler
 from backend.db_services.mysql.remote_service.handlers import RemoteServiceHandler
 from backend.db_services.redis.toolbox.handlers import ToolboxHandler
+from backend.flow.consts import ConfigTypeEnum
+from backend.flow.utils.mysql.mysql_bk_config import get_engine_from_bk_mysql_config
 from backend.iam_app.handlers.drf_perm.base import DBManagePermission
 from backend.iam_app.handlers.drf_perm.cluster import (
     ClusterDBConsolePermission,
@@ -92,7 +96,55 @@ from backend.iam_app.handlers.drf_perm.cluster import (
 )
 from backend.ticket.models import Todo
 
+logger = logging.getLogger("root")
 SWAGGER_TAG = _("集群通用接口")
+DEFAULT_ENGINE_ATTR = "default_engine"
+MYSQL_DEFAULT_ENGINE_CLUSTER_TYPES = {
+    ClusterType.TenDBSingle.value,
+    ClusterType.TenDBHA.value,
+    ClusterType.TenDBCluster.value,
+}
+
+
+def _query_module_default_engines(bk_biz_id: int, clusters) -> List[Dict[str, str]]:
+    """按模块 dbconf 聚合 mysqld.default_storage_engine 去重选项。"""
+    engines: List[Dict[str, str]] = []
+    existing = set()
+    module_rows = (
+        clusters.filter(cluster_type__in=MYSQL_DEFAULT_ENGINE_CLUSTER_TYPES)
+        .exclude(db_module_id=0)
+        .values("db_module_id", "cluster_type", "major_version")
+        .distinct()
+    )
+    for row in module_rows:
+        db_module_id = row["db_module_id"]
+        major_version = row["major_version"]
+        if not major_version:
+            continue
+        try:
+            content = (
+                DBConfigApi.query_conf_item(
+                    {
+                        "bk_biz_id": str(bk_biz_id),
+                        "level_name": LevelName.MODULE,
+                        "level_value": str(db_module_id),
+                        "conf_file": major_version,
+                        "conf_type": ConfigTypeEnum.DBConf,
+                        "namespace": row["cluster_type"],
+                        "format": FormatType.MAP_LEVEL,
+                    }
+                )
+                or {}
+            ).get("content") or {}
+            engine = get_engine_from_bk_mysql_config(content)
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning(_("查询模块 {} 默认存储引擎失败: {}").format(db_module_id, str(e)))
+            continue
+        if not engine or engine in existing:
+            continue
+        existing.add(engine)
+        engines.append({"value": engine, "text": engine})
+    return engines
 
 
 class DBBaseViewSet(viewsets.SystemViewSet):
@@ -289,14 +341,15 @@ class DBBaseViewSet(viewsets.SystemViewSet):
         # 聚合每个属性字段
         cluster_attrs: Dict[str, Union[List, Set]] = defaultdict(list)
         existing_values: Dict[str, Set[str]] = defaultdict(set)
+        cluster_model_attrs = [attr for attr in data["cluster_attrs"] if attr != DEFAULT_ENGINE_ATTR]
         # 过滤一些不合格的数据
-        if data["cluster_attrs"]:
+        if cluster_model_attrs:
             # 获取choice map
             field__choice_map = {
                 attr: {value: label for value, label in getattr(Cluster, attr).field.choices or []}
-                for attr in data["cluster_attrs"]
+                for attr in cluster_model_attrs
             }
-            for attr in clusters.values(*data["cluster_attrs"]):
+            for attr in clusters.values(*cluster_model_attrs):
                 for key, value in attr.items():
                     # 保留bk_cloud_id有等于0的情况
                     if value is not None and value not in existing_values[key]:
@@ -338,6 +391,9 @@ class DBBaseViewSet(viewsets.SystemViewSet):
             unique_roles = set(storage_roles) | (set(proxy_roles))
             roles_dicts = [{"value": role, "text": role} for role in unique_roles]
             cluster_attrs["role"] = roles_dicts
+
+        if DEFAULT_ENGINE_ATTR in data["cluster_attrs"]:
+            cluster_attrs[DEFAULT_ENGINE_ATTR] = _query_module_default_engines(data["bk_biz_id"], clusters)
 
         return Response(cluster_attrs)
 

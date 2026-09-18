@@ -132,7 +132,7 @@ class QueryBizClusterAttrsSerializer(serializers.Serializer):
     cluster_type = serializers.CharField(help_text=_("集群类型"), required=False)
     pool = serializers.CharField(help_text=_("池类型"), required=False)
     is_todo = serializers.BooleanField(help_text=_("是否查询待办"), required=False)
-    cluster_attrs = serializers.CharField(help_text=_("查询集群属性字段(逗号分隔)"), default="")
+    cluster_attrs = serializers.CharField(help_text=_("查询集群属性字段(逗号分隔，支持虚拟字段 default_engine)"), default="")
     instances_attrs = serializers.CharField(help_text=_("查询实例属性字段(逗号分隔)"), default="")
     machine_attrs = serializers.CharField(help_text=_("查询主机属性字段(逗号分隔)"), default="")
 
@@ -206,7 +206,13 @@ class ResourceAdministrationSerializer(serializers.Serializer):
 
 class QueryBizClusterAttrsResponseSerializer(serializers.Serializer):
     class Meta:
-        swagger_schema_fields = {"example": {"id": [1, 2, 3], "region": ["sz", "sh"]}}
+        swagger_schema_fields = {
+            "example": {
+                "id": [1, 2, 3],
+                "region": ["sz", "sh"],
+                "default_engine": [{"value": "InnoDB", "text": "InnoDB"}],
+            }
+        }
 
 
 class WebConsoleSerializer(serializers.Serializer):
