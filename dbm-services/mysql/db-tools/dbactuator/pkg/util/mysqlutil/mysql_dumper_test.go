@@ -11,6 +11,7 @@
 package mysqlutil
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -127,5 +128,50 @@ func TestGetDumpCmdWhereEmpty(t *testing.T) {
 	cmd := m.getDumpCmd("/tmp/out.sql", "/tmp/out.err", "", false)
 	if strings.Contains(cmd, "--where") {
 		t.Fatalf("where 为空时不应出现 --where 参数: %s", cmd)
+	}
+}
+
+func TestLeftoverInputDbs(t *testing.T) {
+	cases := []struct {
+		name     string
+		inputdbs []string
+		dumpMap  map[string][]string
+		want     []string
+	}{
+		{
+			name:     "form db1 plus sql db2",
+			inputdbs: []string{"db1", "db2"},
+			dumpMap:  map[string][]string{"db2": {"tb"}},
+			want:     []string{"db1"},
+		},
+		{
+			name:     "empty dump map key covers all form dbs",
+			inputdbs: []string{"db1"},
+			dumpMap:  map[string][]string{"": {"tb"}},
+			want:     nil,
+		},
+		{
+			name:     "sql db missing on prod does not create db2",
+			inputdbs: []string{"db1"},
+			dumpMap:  map[string][]string{"db2": {"tb"}},
+			want:     []string{"db1"},
+		},
+		{
+			name:     "empty dump map leaves all input dbs",
+			inputdbs: []string{"db1"},
+			dumpMap:  map[string][]string{},
+			want:     []string{"db1"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := leftoverInputDbs(c.inputdbs, c.dumpMap)
+			if len(got) == 0 && len(c.want) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("leftoverInputDbs(%v, %v) = %v, want %v", c.inputdbs, c.dumpMap, got, c.want)
+			}
+		})
 	}
 }

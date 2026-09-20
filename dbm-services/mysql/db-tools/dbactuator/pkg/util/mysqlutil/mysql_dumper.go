@@ -283,7 +283,47 @@ func (m *MySQLDumperAppend) Dump() (err error) {
 			}
 		}
 	}
+	// 表单独有库：生产上存在、DumpMap 未覆盖的表单库只建空库，不 dump 表
+	for _, db := range leftoverInputDbs(inputdbs, m.DumpMap) {
+		logger.Info("append empty database for form-only leftover db:%s", db)
+		_, err = fd.WriteString(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`;\n", db))
+		if err != nil {
+			return fmt.Errorf("write file failed %s", err.Error())
+		}
+	}
 	return err
+}
+
+// coveredDumpDbs DumpMap 循环里会写建库语句的库。
+// 空 key 表示覆盖全部 inputdbs；非空 key 仅覆盖「在 inputdbs 中的那个库」。
+func coveredDumpDbs(inputdbs []string, dumpMap map[string][]string) []string {
+	if len(dumpMap) == 0 {
+		return nil
+	}
+	for db := range dumpMap {
+		if db == "" {
+			return append([]string{}, inputdbs...)
+		}
+	}
+	var covered []string
+	for db := range dumpMap {
+		if slices.Contains(inputdbs, db) {
+			covered = append(covered, db)
+		}
+	}
+	return lo.Uniq(covered)
+}
+
+// leftoverInputDbs 生产上存在但指定库表 dump 不会写建库语句的表单库。
+func leftoverInputDbs(inputdbs []string, dumpMap map[string][]string) []string {
+	covered := coveredDumpDbs(inputdbs, dumpMap)
+	var leftover []string
+	for _, db := range inputdbs {
+		if !slices.Contains(covered, db) {
+			leftover = append(leftover, db)
+		}
+	}
+	return leftover
 }
 
 func dumpIsOk(errLog string) (err error) {

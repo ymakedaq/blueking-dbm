@@ -182,7 +182,17 @@ func (c *SemanticDumpSchemaComp) Init() (err error) {
 		return err
 	}
 	if len(finaldbs) == 0 {
-		return fmt.Errorf("变更对象库不存在，请检查变更对象是否正确")
+		return emptyDumpDbsError(
+			formDbNames(c.Params.ExecuteObjects),
+			c.Params.ParseNeedDumpDbs,
+			c.Params.ParseCreateDbs,
+		)
+	}
+	if warn := disjointDumpWarning(
+		formDbNames(c.Params.ExecuteObjects),
+		sqlParseDbs(c.Params.ParseNeedDumpDbs, c.Params.ParseCreateDbs, c.Params.SpecialTbls),
+	); warn != "" {
+		logger.Warn(warn)
 	}
 
 	c.dbs = lo.Uniq(finaldbs)
@@ -404,4 +414,40 @@ func (c UploadBkRepoParam) Upload() (err error) {
 	}
 	logger.Info("%v", uploadRespdata)
 	return nil
+}
+
+func formDbNames(objs []ExecuteSQLFileObj) []string {
+	var dbs []string
+	for _, obj := range objs {
+		dbs = append(dbs, obj.DbNames...)
+	}
+	return lo.Uniq(dbs)
+}
+
+func sqlParseDbs(parseNeed, parseCreate []string, special []SpecialTblInfo) []string {
+	dbs := append([]string{}, parseNeed...)
+	dbs = append(dbs, parseCreate...)
+	for _, item := range special {
+		if item.DbName != "" {
+			dbs = append(dbs, item.DbName)
+		}
+	}
+	return lo.Uniq(dbs)
+}
+
+func disjointDumpWarning(formDbs, sqlDbs []string) string {
+	if len(formDbs) == 0 || len(sqlDbs) == 0 {
+		return ""
+	}
+	if len(lo.Intersect(formDbs, sqlDbs)) > 0 {
+		return ""
+	}
+	return fmt.Sprintf("表单变更对象是 %v，SQL 实际涉及 %v。将按默认库执行该文件，SQL 中的全限定名仍以 SQL 为准。", formDbs, sqlDbs)
+}
+
+func emptyDumpDbsError(formDbs, parseNeed, parseCreate []string) error {
+	return fmt.Errorf(
+		"表单变更对象 %v 在集群中匹配不到任何库；SQL 解析需要的库是 %v，CREATE DATABASE 库是 %v。请确认变更对象是否填写正确。",
+		formDbs, parseNeed, parseCreate,
+	)
 }

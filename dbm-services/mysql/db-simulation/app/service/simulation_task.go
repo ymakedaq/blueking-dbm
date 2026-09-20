@@ -33,6 +33,7 @@ import (
 	"dbm-services/common/go-pubpkg/logger"
 	"dbm-services/mysql/db-simulation/app"
 	"dbm-services/mysql/db-simulation/app/config"
+	"dbm-services/mysql/db-simulation/app/service/matcherr"
 	"dbm-services/mysql/db-simulation/model"
 )
 
@@ -533,7 +534,7 @@ func (t *SimulationTask) executeOneObject(e ExecuteSQLFileObj, containerName str
 	}
 	realexcutedbs = util.FilterOutStringSlice(intentionDbs, ignoreDbs)
 	if len(realexcutedbs) == 0 {
-		return "", "", fmt.Errorf("需要执行的db:%v,需要忽略的db:%v,查询线上存在的db,计算后没有找到任何变更的目标db,请检查你的输入是否正确", e.DbNames, e.IgnoreDbNames)
+		return "", "", matcherr.NoMatchExecuteDbError(e.DbNames, e.IgnoreDbNames, t.dbsExcludeSysDb)
 	}
 
 	// 第一步：下载 SQL 文件
