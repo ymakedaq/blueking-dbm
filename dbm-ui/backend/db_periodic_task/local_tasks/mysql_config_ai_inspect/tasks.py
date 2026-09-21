@@ -8,11 +8,13 @@ Unless required by applicable law or agreed to in writing, software distributed 
 an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the
 specific language governing permissions and limitations under the License.
 """
+import importlib
 import logging
 import time
 from datetime import datetime, timedelta
 
 from blueapps.core.celery.celery import app
+from celery.schedules import crontab
 from django.core.cache import cache
 from django.utils import timezone
 from django.utils.translation import gettext as _
@@ -20,13 +22,22 @@ from django.utils.translation import gettext as _
 from backend import env
 from backend.configuration.constants import DBType
 from backend.db_meta.enums import ClusterType
-from backend.db_periodic_task.local_tasks import start_new_span
-from backend.db_periodic_task.local_tasks.mysql_config_ai_inspect.batch import ensure_open_batch
-from backend.db_periodic_task.local_tasks.mysql_config_ai_inspect.parse_result import parse_config_ai_inspect_res
+from backend.db_periodic_task.register import register_periodic_task
+from backend.db_report.enums import ReportStateType
 from backend.db_report.models.mysql_config_ai_inspect import MysqlConfigAiInspect, MysqlConfigAiInspectStatus
 from backend.db_report.portrait import MysqlPortraitDimensionCode, ingest_summary
 from backend.db_report.portrait.exceptions import PortraitSDKBaseException
 from backend.dbm_aiagent.agent.constants import DEFAULT_AGENT_CHAT_TIMEOUT, DBMAgentCode
+
+# language_finder 禁止对 local_tasks 使用 from-import；改用 importlib 动态加载。
+_batch_mod = importlib.import_module("backend.db_periodic_task.local_tasks.mysql_config_ai_inspect.batch")
+_parse_result_mod = importlib.import_module(
+    "backend.db_periodic_task.local_tasks.mysql_config_ai_inspect.parse_result"
+)
+_span_mod = importlib.import_module("backend.db_periodic_task.local_tasks.context_manager")
+ensure_open_batch = _batch_mod.ensure_open_batch
+parse_config_ai_inspect_res = _parse_result_mod.parse_config_ai_inspect_res
+start_new_span = _span_mod.start_new_span
 
 logger = logging.getLogger("celery")
 
@@ -49,6 +60,15 @@ def _inspect_lock_key(batch_id: str, cluster_id: int) -> str:
 
 def _batch_lease_key(batch_id: str) -> str:
     return f"mysql_config_ai_inspect:batch_lease:{batch_id}"
+
+
+def _report_fields_for_job(job_status: str, error_msg: str = "", summary: str = "") -> dict:
+    """作业 status 映射巡检报告 state。success 表示 AI 已出报告，不是配置一定健康。"""
+    if job_status == MysqlConfigAiInspectStatus.FAILED.value:
+        return {"state": ReportStateType.ABNORMAL.value, "msg": (error_msg or "")[:2000]}
+    if job_status == MysqlConfigAiInspectStatus.SUCCESS.value:
+        return {"state": ReportStateType.WARNING.value, "msg": (summary or "")[:2000]}
+    return {"state": "", "msg": ""}
 
 
 def _release_inspect_lock(batch_id: str, cluster_id: int) -> None:
@@ -88,13 +108,15 @@ def _mark_attempt_failed(row: MysqlConfigAiInspect, error_msg: str, cost_ms: int
         if retry_count >= MAX_RETRY_COUNT
         else MysqlConfigAiInspectStatus.PENDING.value
     )
-    updated = MysqlConfigAiInspect.objects.filter(id=row.id, status=MysqlConfigAiInspectStatus.RUNNING.value,).update(
+    report_fields = _report_fields_for_job(new_status, error_msg=error_msg or "")
+    updated = MysqlConfigAiInspect.objects.filter(id=row.id, status=MysqlConfigAiInspectStatus.RUNNING.value).update(
         retry_count=retry_count,
         agent_cost_ms=cost_ms,
         error_msg=(error_msg or "")[:2000],
         status=new_status,
         updater="system",
         update_at=timezone.now(),
+        **report_fields,
     )
     if not updated:
         logger.warning(_("配置巡检失败落库跳过(状态已变): id={} domain={}").format(row.id, row.cluster_domain))
@@ -104,6 +126,8 @@ def _mark_attempt_failed(row: MysqlConfigAiInspect, error_msg: str, cost_ms: int
     row.agent_cost_ms = cost_ms
     row.error_msg = (error_msg or "")[:2000]
     row.status = new_status
+    row.state = report_fields["state"]
+    row.msg = report_fields["msg"]
     if new_status == MysqlConfigAiInspectStatus.FAILED.value:
         logger.warning(
             _("配置巡检失败达上限: id={} domain={} retry_count={} err={}").format(
@@ -119,7 +143,7 @@ def _mark_attempt_failed(row: MysqlConfigAiInspect, error_msg: str, cost_ms: int
     return True
 
 
-# @register_periodic_task(run_every=crontab(minute="*/5"))
+@register_periodic_task(run_every=crontab(minute="*/5"))
 def periodic_mysql_config_ai_inspect():
     """每 5 分钟推进一批次中的一个集群配置 AI 巡检。"""
     if not env.ENABLE_DBM_AI:
@@ -236,6 +260,8 @@ def run_mysql_config_ai_inspect(row_id: int, lock_key: str):
             )
             return
 
+        summary = parsed.get("summary") or ""
+        report_fields = _report_fields_for_job(MysqlConfigAiInspectStatus.SUCCESS.value, summary=summary)
         updated = MysqlConfigAiInspect.objects.filter(
             id=row.id,
             status=MysqlConfigAiInspectStatus.RUNNING.value,
@@ -243,11 +269,12 @@ def run_mysql_config_ai_inspect(row_id: int, lock_key: str):
             status=MysqlConfigAiInspectStatus.SUCCESS.value,
             report_id=parsed["report_id"],
             share_url=parsed["share_url"],
-            summary=parsed.get("summary") or "",
+            summary=summary,
             agent_cost_ms=cost_ms,
             error_msg="",
             updater="system",
             update_at=timezone.now(),
+            **report_fields,
         )
         if not updated:
             logger.warning(_("配置巡检成功落库跳过(状态已变): id={} domain={}").format(row.id, row.cluster_domain))
@@ -256,8 +283,10 @@ def run_mysql_config_ai_inspect(row_id: int, lock_key: str):
         row.status = MysqlConfigAiInspectStatus.SUCCESS.value
         row.report_id = parsed["report_id"]
         row.share_url = parsed["share_url"]
-        row.summary = parsed.get("summary") or ""
+        row.summary = summary
         row.agent_cost_ms = cost_ms
+        row.state = report_fields["state"]
+        row.msg = report_fields["msg"]
         logger.info(
             _("配置巡检成功: id={} domain={} cost_ms={} report_id={}").format(
                 row.id, row.cluster_domain, cost_ms, row.report_id

@@ -43,6 +43,9 @@ class MysqlConfigAiInspect(AuditedModel):
     summary = models.TextField(default="", help_text=_("巡检总结"))
     agent_cost_ms = models.IntegerField(default=0, help_text=_("Agent 耗时（毫秒）"))
     error_msg = models.TextField(default="", help_text=_("失败原因"))
+    state = models.CharField(default="", max_length=64, help_text=_("巡检结果状态"))
+    failed_days = models.IntegerField(default=0, help_text=_("失败持续天数"))
+    msg = models.TextField(default="", help_text=_("备注信息"))
 
     class Meta:
         managed = True

@@ -57,6 +57,8 @@ def test_worker_success_persists_fields(ai_inspect_table, inspect_tasks):
     assert row.report_id == _RID
     assert row.share_url == _URL
     assert row.summary == "s"
+    assert row.state == "warning"
+    assert row.msg == "s"
     assert row.agent_cost_ms >= 0
     delete_mock.assert_called_with(lock_key)
     ingest_mock.assert_called_once()
@@ -92,6 +94,7 @@ def test_worker_retries_then_fails(ai_inspect_table, inspect_tasks):
     row.refresh_from_db()
     assert row.status == MysqlConfigAiInspectStatus.PENDING.value
     assert row.retry_count == 1
+    assert row.state == ""
     ingest_mock.assert_not_called()
 
     row.status = MysqlConfigAiInspectStatus.RUNNING.value
@@ -114,6 +117,7 @@ def test_worker_retries_then_fails(ai_inspect_table, inspect_tasks):
     row.refresh_from_db()
     assert row.retry_count == 3
     assert row.status == MysqlConfigAiInspectStatus.FAILED.value
+    assert row.state == "abnormal"
     ingest_mock.assert_not_called()
 
 
@@ -130,6 +134,7 @@ def test_worker_success_after_retry(ai_inspect_table, inspect_tasks):
     assert row.status == MysqlConfigAiInspectStatus.SUCCESS.value
     assert row.summary == ""
     assert row.report_id == _RID
+    assert row.state == "warning"
     assert ingest_mock.call_args.kwargs["summary"] == ""
     assert ingest_mock.call_args.kwargs["detail_url"] == _URL
 
@@ -225,6 +230,7 @@ def test_reclaim_stale_marks_failed_at_max_retry(ai_inspect_table, inspect_tasks
     row.refresh_from_db()
     assert row.status == MysqlConfigAiInspectStatus.FAILED.value
     assert row.retry_count == 3
+    assert row.state == "abnormal"
 
 
 def test_mark_failed_cas_skips_success(ai_inspect_table, inspect_tasks):
@@ -238,6 +244,15 @@ def test_mark_failed_cas_skips_success(ai_inspect_table, inspect_tasks):
     row.refresh_from_db()
     assert row.status == MysqlConfigAiInspectStatus.SUCCESS.value
     assert row.retry_count == 0
+
+
+def test_periodic_task_registered(inspect_tasks):
+    from backend.db_periodic_task.register import registered_local_tasks
+
+    assert (
+        "backend.db_periodic_task.local_tasks.mysql_config_ai_inspect.tasks.periodic_mysql_config_ai_inspect"
+        in registered_local_tasks
+    )
 
 
 def test_claim_bumps_update_at_avoids_false_reclaim(ai_inspect_table, inspect_tasks):
