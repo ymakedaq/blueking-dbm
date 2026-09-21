@@ -29,6 +29,13 @@ def ai_inspect_table(django_db_setup, django_db_blocker):
         table_name = MysqlConfigAiInspect._meta.db_table
         existing = conn.introspection.table_names()
         created = False
+        if table_name in existing:
+            with conn.cursor() as cursor:
+                col_names = {c.name for c in conn.introspection.get_table_description(cursor, table_name)}
+            if "state" not in col_names:
+                with conn.schema_editor() as schema_editor:
+                    schema_editor.delete_model(MysqlConfigAiInspect)
+                existing = conn.introspection.table_names()
         if table_name not in existing:
             with conn.schema_editor() as schema_editor:
                 schema_editor.create_model(MysqlConfigAiInspect)
@@ -56,6 +63,13 @@ def test_model_default_pending_row(ai_inspect_table):
     assert row.share_url == ""
     assert row.summary == ""
     assert row.agent_cost_ms == 0
+    assert row.state == ""
+    assert row.failed_days == 0
+    assert row.msg == ""
+
+
+def test_filter_state_in_does_not_raise(ai_inspect_table):
+    MysqlConfigAiInspect.objects.filter(state__in=["abnormal", "warning"]).count()
 
 
 def test_unique_batch_cluster(ai_inspect_table):
