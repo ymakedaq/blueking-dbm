@@ -39,7 +39,7 @@ from backend.components.mysqldtsapi.types import (
     TaskTableFilterTable,
     parse_dts_binlog_coord,
 )
-from backend.db_meta.enums import ClusterType, InstanceInnerRole, InstanceRole, TenDBClusterSpiderRole
+from backend.db_meta.enums import ClusterType, InstanceInnerRole, InstanceRole, InstanceStatus, TenDBClusterSpiderRole
 from backend.db_meta.models import Cluster, MysqlDtsCluster, ProxyInstance, StorageInstance
 from backend.db_meta.models.mysql_dts import MysqlDtsClusterStatus
 from backend.db_services.dbbase.constants import IP_PORT_DIVIDER
@@ -66,17 +66,89 @@ from backend.flow.utils.mysql.dts.migrate_plan import (
 logger = logging.getLogger("flow")
 
 
+def _reject_pinned_source_with_role(source_spec: SourceSpec) -> None:
+    if source_spec.source_host or source_spec.source_instance_id or source_spec.source_instance_role:
+        raise ValueError(_("指定 source_role 时不能同时填写 source_host、source_instance_id 或 source_instance_role"))
+
+
+def _resolve_slave_source_endpoint(cluster: Cluster) -> tuple[str, int]:
+    if cluster.cluster_type != ClusterType.TenDBHA.value:
+        raise ValueError(_("集群 {} 没有可供选择的从库").format(cluster.id))
+    ins = (
+        cluster.storageinstance_set.filter(
+            instance_role=InstanceRole.BACKEND_SLAVE,
+            is_stand_by=True,
+            status=InstanceStatus.RUNNING,
+        )
+        .order_by("id")
+        .first()
+    )
+    if not ins:
+        raise ValueError(_("集群 {} 未找到运行中的备选从库").format(cluster.id))
+    return ins.machine.ip, ins.port
+
+
+def _resolve_master_source_endpoint(cluster: Cluster) -> tuple[str, int]:
+    if cluster.cluster_type == ClusterType.TenDBSingle.value:
+        ins = cluster.storageinstance_set.filter(instance_role=InstanceRole.ORPHAN).first()
+        if not ins:
+            ins = cluster.storageinstance_set.first()
+        if not ins:
+            raise ValueError(_("集群 {} 未找到可用的源实例").format(cluster.id))
+        return ins.machine.ip, ins.port
+    if cluster.cluster_type != ClusterType.TenDBHA.value:
+        raise ValueError(_("集群 {} 不支持通过 source_role 选择实例").format(cluster.id))
+    ins = cluster.storageinstance_set.filter(instance_role=InstanceRole.BACKEND_MASTER).first()
+    if not ins:
+        raise ValueError(_("集群 {} 未找到可用的 Master 源实例").format(cluster.id))
+    return ins.machine.ip, ins.port
+
+
+def _resolve_explicit_source_role(role: str, cluster: Cluster) -> tuple[str, int]:
+    if role not in ("master", "slave"):
+        raise ValueError(_("source_role 只能是 master 或 slave"))
+    if cluster.cluster_type == ClusterType.TenDBCluster.value:
+        raise ValueError(_("集群 {} 不支持通过 source_role 选择实例").format(cluster.id))
+    if role == "slave":
+        return _resolve_slave_source_endpoint(cluster)
+    return _resolve_master_source_endpoint(cluster)
+
+
+def resolve_cluster_master_endpoint(cluster: Cluster) -> tuple[str, int]:
+    """源集群主库。不读 source_role，也不读 source_host / source_instance_id / source_instance_role。"""
+    if cluster.cluster_type == ClusterType.TenDBCluster.value:
+        ins = cluster.storageinstance_set.filter(instance_role=InstanceRole.REMOTE_MASTER).first()
+        if not ins:
+            raise ValueError(_("集群 {} 未找到可用的 Remote Master 源实例").format(cluster.id))
+        return ins.machine.ip, ins.port
+    if cluster.cluster_type == ClusterType.TenDBSingle.value:
+        ins = cluster.storageinstance_set.filter(instance_role=InstanceRole.ORPHAN).first()
+        if not ins:
+            ins = cluster.storageinstance_set.first()
+        if not ins:
+            raise ValueError(_("集群 {} 未找到可用的源实例").format(cluster.id))
+        return ins.machine.ip, ins.port
+    ins = cluster.storageinstance_set.filter(instance_role=InstanceRole.BACKEND_MASTER).first()
+    if not ins:
+        raise ValueError(_("集群 {} 未找到可用的 Master 源实例").format(cluster.id))
+    return ins.machine.ip, ins.port
+
+
 def resolve_source_endpoint(source_spec: SourceSpec, cluster: Cluster) -> tuple[str, int]:
+    role = (source_spec.source_role or "").strip()
+    if role:
+        _reject_pinned_source_with_role(source_spec)
+        return _resolve_explicit_source_role(role, cluster)
     if source_spec.source_host:
         if IP_PORT_DIVIDER in source_spec.source_host:
             ip, port = source_spec.source_host.split(IP_PORT_DIVIDER, 1)
             return ip, int(port)
         return source_spec.source_host, 3306
     if source_spec.source_instance_id:
-        ins = StorageInstance.objects.get(id=source_spec.source_instance_id, cluster=cluster)
+        ins = _storage_by_instance_id(cluster, source_spec.source_instance_id)
         return ins.machine.ip, ins.port
     if source_spec.source_instance_role:
-        ins = cluster.storageinstance_set.get(instance_role=source_spec.source_instance_role)
+        ins = _storage_by_instance_role(cluster, source_spec.source_instance_role)
         return ins.machine.ip, ins.port
 
     # TenDBCluster：Source 必须落在 Remote 存储节点，不能用 Spider 代理探测/拉 binlog
@@ -99,6 +171,22 @@ def resolve_source_endpoint(source_spec: SourceSpec, cluster: Cluster) -> tuple[
     if not ins:
         raise ValueError(_("集群 {} 未找到可用的 Master 源实例").format(cluster.id))
     return ins.machine.ip, ins.port
+
+
+def _storage_by_instance_id(cluster: Cluster, instance_id: int) -> StorageInstance:
+    try:
+        return StorageInstance.objects.get(id=instance_id, cluster=cluster)
+    except StorageInstance.DoesNotExist as exc:
+        raise ValueError(_("集群 {} 的源实例 {} 不存在").format(cluster.id, instance_id)) from exc
+
+
+def _storage_by_instance_role(cluster: Cluster, role: str) -> StorageInstance:
+    try:
+        return cluster.storageinstance_set.get(instance_role=role)
+    except StorageInstance.DoesNotExist as exc:
+        raise ValueError(_("集群 {} 未找到角色为 {} 的源实例").format(cluster.id, role)) from exc
+    except StorageInstance.MultipleObjectsReturned as exc:
+        raise ValueError(_("集群 {} 的角色 {} 匹配到多条源实例").format(cluster.id, role)) from exc
 
 
 def _pick_shard_remote_instance(shard, instance_role=None) -> StorageInstance:
@@ -130,6 +218,9 @@ def expand_tendbcluster_source_specs(
     cluster = Cluster.objects.get(id=source.cluster_id)
     if cluster.cluster_type != ClusterType.TenDBCluster.value:
         return [source]
+
+    if (source.source_role or "").strip():
+        raise ValueError(_("集群 {} 不支持通过 source_role 选择实例").format(cluster.id))
 
     shards = list(cluster.tendbclusterstorageset_set.all().order_by("shard_id"))
     if not shards:
@@ -210,6 +301,7 @@ def _append_grant_target(
     port: int,
     *,
     allow_backup_admin: bool = True,
+    primary_tdbctl: bool = False,
 ):
     address = "{}{}{}".format(ip, IP_PORT_DIVIDER, port)
     targets[address] = DtsGrantTarget(
@@ -218,15 +310,17 @@ def _append_grant_target(
         cluster_id=cluster.id,
         major_version=cluster.major_version or "",
         allow_backup_admin=allow_backup_admin,
+        primary_tdbctl=primary_tdbctl,
     )
 
 
 class TargetGrantSpec(NamedTuple):
-    """一个目标授权点。"""
+    """一个目标授权点。primary_tdbctl 只标 Primary 中控，Spider 业务端口同为 MariaDB 但不能混用。"""
 
     ip: str
     port: int
     allow_backup_admin: bool
+    primary_tdbctl: bool = False
 
 
 def _collect_target_grant_specs(cluster: Cluster, migrate_type: str) -> list[TargetGrantSpec]:
@@ -244,7 +338,7 @@ def _collect_target_grant_specs(cluster: Cluster, migrate_type: str) -> list[Tar
         # tdbctl 为中控主从复制，仅对 Primary 授权（勿对所有 spider 的 admin_port / 从中控授权）
         if spider_masters:
             ctl_ip, ctl_port = _resolve_tdbctl_endpoint(cluster, spider_masters[0])
-            specs.append(TargetGrantSpec(ctl_ip, ctl_port, allow_backup_admin=False))
+            specs.append(TargetGrantSpec(ctl_ip, ctl_port, allow_backup_admin=False, primary_tdbctl=True))
         for storage in cluster.storageinstance_set.filter(instance_role=InstanceRole.REMOTE_MASTER):
             specs.append(TargetGrantSpec(storage.machine.ip, storage.port, allow_backup_admin=True))
         if not specs:
@@ -272,6 +366,9 @@ def collect_migrate_grant_targets(plan: DtsMigratePlan) -> list[DtsGrantTarget]:
             cluster = Cluster.objects.get(id=source_spec.cluster_id)
             ip, port = resolve_source_endpoint(source_spec, cluster)
             _append_grant_target(targets, cluster, ip, port)
+            if (source_spec.source_role or "").strip() == "slave":
+                master_ip, master_port = resolve_cluster_master_endpoint(cluster)
+                _append_grant_target(targets, cluster, master_ip, master_port)
         target_cluster = Cluster.objects.get(id=task_spec.target_cluster_id)
         for spec in _collect_target_grant_specs(target_cluster, plan.migrate_type):
             _append_grant_target(
@@ -280,6 +377,7 @@ def collect_migrate_grant_targets(plan: DtsMigratePlan) -> list[DtsGrantTarget]:
                 spec.ip,
                 spec.port,
                 allow_backup_admin=spec.allow_backup_admin,
+                primary_tdbctl=spec.primary_tdbctl,
             )
     return list(targets.values())
 
@@ -679,7 +777,7 @@ def build_dts_routine_checksum_verify_kwargs(task_spec: DtsTaskSpec) -> dict | N
         return None
     source_spec = task_spec.sources[0]
     src_cluster = Cluster.objects.get(id=source_spec.cluster_id)
-    master_host, master_port = resolve_source_endpoint(source_spec, src_cluster)
+    master_host, master_port = resolve_cluster_master_endpoint(src_cluster)
     target_ins = _resolve_non_cluster_target_write_instance(dst_cluster)
     master_addr = f"{master_host}{IP_PORT_DIVIDER}{master_port}"
     slave_addr = f"{target_ins.machine.ip}{IP_PORT_DIVIDER}{target_ins.port}"

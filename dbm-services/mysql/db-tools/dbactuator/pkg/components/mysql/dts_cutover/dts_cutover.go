@@ -66,6 +66,8 @@ type SourceEndpoint struct {
 	Password   string     `json:"password" validate:"required"`
 	SourceName string     `json:"source_name"`
 	SyncScope  *SyncScope `json:"sync_scope"`
+	// Replica 非空时，Host/Port 是要锁表的主库，DTS 从 Replica 这台从库读 binlog。
+	Replica *ReplicaEndpoint `json:"replica,omitempty"`
 }
 
 // Example payload 示例（IP 使用 127.0.0.x）。
@@ -133,6 +135,14 @@ func (c *Comp) Init() error {
 	if len(p.SourceEndpoints) == 0 {
 		return fmt.Errorf("source_endpoints 为空")
 	}
+	for _, ep := range p.SourceEndpoints {
+		if ep.Replica == nil {
+			continue
+		}
+		if err := validateReplicaEndpoint(ep); err != nil {
+			return err
+		}
+	}
 	if len(p.LockTables) == 0 && (p.SyncScope == nil || p.SyncScope.IsEmpty()) {
 		// 允许仅在各 endpoint 内嵌 sync_scope
 		hasEPScope := false
@@ -165,7 +175,32 @@ func (c *Comp) Run() error {
 		return err
 	}
 	p := c.Params
-	logger.Info("持锁复核按 SBM=0 且 syncer>=加锁 master 快照 skip_checksum=%t", p.SkipChecksum)
+	logger.Info(
+		"DTS cutover 开始 task=%s sources=%d recheck=%d poll_max=%d skip_checksum=%t",
+		p.TaskName, len(p.SourceEndpoints), p.CatchupRecheck, p.CatchupPollMax, p.SkipChecksum,
+	)
+
+	replicas := make(map[int]*replicaConn)
+	defer func() {
+		for _, rc := range replicas {
+			rc.Close()
+		}
+	}()
+	for i, ep := range p.SourceEndpoints {
+		if ep.Replica == nil {
+			logger.Info("锁定 %s:%d，DTS 也从这台读 binlog source_name=%s", ep.Host, ep.Port, ep.SourceName)
+			continue
+		}
+		logger.Info(
+			"锁定主库 %s:%d，DTS 从从库 %s:%d 读 binlog source_name=%s",
+			ep.Host, ep.Port, ep.Replica.Host, ep.Replica.Port, ep.SourceName,
+		)
+		rc, rerr := openReplicaBeforeLock(ep)
+		if rerr != nil {
+			return rerr
+		}
+		replicas[i] = rc
+	}
 
 	locks := make([]*SourceLockConn, 0, len(p.SourceEndpoints))
 	defer func() {
@@ -200,12 +235,22 @@ func (c *Comp) Run() error {
 	if ferr != nil {
 		return fmt.Errorf("加锁后拉取 status 失败，无法建立位点快照（不执行 stop）: %w", ferr)
 	}
-	lockSnapshots, serr := BuildLockMasterSnapshots(snapResp.Data)
+	replicaSnaps := make(map[int]BinlogCoord, len(replicas))
+	for i, rc := range replicas {
+		s, rerr := catchUpReplicaToLockedMaster(
+			locks[i], rc, defaultReplicaApplyPollMax, func() { time.Sleep(replicaApplyPollInterval) },
+		)
+		if rerr != nil {
+			return rerr
+		}
+		replicaSnaps[i] = s
+	}
+	lockSnapshots, serr := buildLockSnapshots(p.SourceEndpoints, snapResp.Data, replicaSnaps)
 	if serr != nil {
 		return fmt.Errorf("建立加锁位点快照失败（不执行 stop）: %w", serr)
 	}
 	for src, coord := range lockSnapshots {
-		logger.Info("加锁位点快照 source=%s master=(%s, %d)", src, coord.File, coord.Position)
+		logger.Info("加锁位点快照 source=%s binlog=(%s, %d)", src, coord.File, coord.Position)
 	}
 
 	statusItems, perr := pollUntilCaughtUp(
@@ -225,6 +270,7 @@ func (c *Comp) Run() error {
 		return perr
 	}
 
+	logger.Info("持锁复核通过，开始停止任务 task=%s", p.TaskName)
 	if err := StopTaskWhileLocked(p.DtsMasterAddr, p.TaskName); err != nil {
 		return fmt.Errorf("持锁后停止 DTS 任务失败（将 unlock）: %w", err)
 	}

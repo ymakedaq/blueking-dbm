@@ -11,6 +11,7 @@
 package dts_cutover
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode"
@@ -95,6 +96,30 @@ func CompareBinlogCoord(a, b BinlogCoord) int {
 		return 1
 	}
 	return 0
+}
+
+// compareBinlogCoordStrict 与 CompareBinlogCoord 相同，但任一边文件序号解析不出时返回错误。
+// 主从各自的 binlog 文件名不同，退回字符串序会给出错误的先后。
+func compareBinlogCoordStrict(a, b BinlogCoord) (int, error) {
+	aSeq, aOk := binlogFileSeq(a.File)
+	if !aOk {
+		return 0, fmt.Errorf("binlog 文件序号无法解析: %q", a.File)
+	}
+	bSeq, bOk := binlogFileSeq(b.File)
+	if !bOk {
+		return 0, fmt.Errorf("binlog 文件序号无法解析: %q", b.File)
+	}
+	switch {
+	case aSeq < bSeq:
+		return -1, nil
+	case aSeq > bSeq:
+		return 1, nil
+	case a.Position < b.Position:
+		return -1, nil
+	case a.Position > b.Position:
+		return 1, nil
+	}
+	return 0, nil
 }
 
 // IsCaughtUpToSnapshot cutover 持锁复核用的位点条件。

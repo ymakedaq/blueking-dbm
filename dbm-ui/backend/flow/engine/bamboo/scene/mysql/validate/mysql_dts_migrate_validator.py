@@ -13,12 +13,19 @@ from django.utils.translation import gettext as _
 
 from backend.components import DRSApi
 from backend.db_meta.models import Cluster
+from backend.db_services.dbbase.constants import IP_PORT_DIVIDER
 from backend.db_services.mysql.remote_service.handlers import RemoteServiceHandler
 from backend.flow.consts import SYSTEM_DBS
 from backend.flow.engine.validate.mysql_base_validate import MysqlBaseValidator, validator_log_format
+from backend.flow.utils.mysql.dts.migrate_helper import (
+    resolve_cluster_master_endpoint,
+    resolve_source_endpoint,
+    task_mode_runs_incremental,
+)
 from backend.flow.utils.mysql.dts.migrate_plan import build_migrate_plan, build_migrate_plans
 from backend.flow.utils.mysql.dts.sync_scope_exist import scope_to_exist_query
 from backend.flow.utils.mysql.mysql_bk_config import get_cluster_config, get_engine_from_bk_mysql_config
+from backend.flow.utils.mysql.mysql_version_parse import mysql_version_parse
 
 logger = logging.getLogger("root")
 
@@ -320,6 +327,107 @@ def _cached_engine(cache: dict, cluster) -> str:
     return cache[cluster.id]
 
 
+def _rpc_rows(cluster, host: str, port: int, sql: str) -> tuple[str, list]:
+    address = "{}{}{}".format(host, IP_PORT_DIVIDER, port)
+    try:
+        result = DRSApi.rpc_mysql_replica_compat(
+            {
+                "addresses": [address],
+                "cmds": [sql],
+                "force": False,
+                "bk_cloud_id": cluster.bk_cloud_id,
+            }
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.exception(_("查询 {}:{} 失败").format(host, port))
+        return _("查询 {}:{} 失败: {}").format(host, port, exc), []
+    if not result or result[0].get("error_msg"):
+        detail = result[0].get("error_msg") if result else ""
+        return _("查询 {}:{} 失败: {}").format(host, port, detail), []
+    cmd_results = result[0].get("cmd_results") or [{}]
+    return "", cmd_results[0].get("table_data") or []
+
+
+def _replica_endpoint_matches(row: dict, master_host: str, master_port: int) -> bool:
+    host = _row_value(row, "Master_Host")
+    port = _row_value(row, "Master_Port")
+    if str(host or "").strip() != str(master_host).strip():
+        return False
+    try:
+        return int(port) == int(master_port)
+    except (TypeError, ValueError):
+        return False
+
+
+def _replica_threads_yes(row: dict) -> bool:
+    return str(_row_value(row, "Slave_IO_Running")) == "Yes" and str(_row_value(row, "Slave_SQL_Running")) == "Yes"
+
+
+def _replica_status_error(cluster, slave_host: str, slave_port: int, master_host: str, master_port: int) -> str:
+    error, rows = _rpc_rows(cluster, slave_host, slave_port, "show slave status")
+    if error:
+        return error
+    if not rows:
+        return _("集群 {} 的从库 {}:{} 没有复制状态").format(cluster.id, slave_host, slave_port)
+    for row in rows:
+        if _replica_endpoint_matches(row, master_host, master_port) and _replica_threads_yes(row):
+            return ""
+    return _("集群 {} 的从库 {}:{} 未同时对上主库 {}:{} 且 IO、SQL 线程为 Yes").format(
+        cluster.id, slave_host, slave_port, master_host, master_port
+    )
+
+
+def _log_updates_variable(version: str) -> str:
+    if mysql_version_parse(version or "") >= mysql_version_parse("8.4.0"):
+        return "log_replica_updates"
+    return "log_slave_updates"
+
+
+def _storage_version(cluster, host: str, port: int) -> str:
+    ins = cluster.storageinstance_set.filter(machine__ip=host, port=port).first()
+    if ins is None:
+        return ""
+    return str(getattr(ins, "version", "") or "")
+
+
+def _mysql_flag_on(value) -> bool:
+    return str(value).strip().lower() in {"1", "on"}
+
+
+def _slave_log_error(cluster, host: str, port: int) -> str:
+    variable = _log_updates_variable(_storage_version(cluster, host, port))
+    sql = "SELECT @@global.log_bin AS log_bin, @@global.{} AS log_updates".format(variable)
+    error, rows = _rpc_rows(cluster, host, port, sql)
+    if error:
+        return error
+    if not rows:
+        return _("集群 {} 的从库 {}:{} 未查到日志变量").format(cluster.id, host, port)
+    row = rows[0]
+    if not _mysql_flag_on(_row_value(row, "log_bin")):
+        return _("集群 {} 的从库 {}:{} 的 log_bin 不是 1").format(cluster.id, host, port)
+    if not _mysql_flag_on(_row_value(row, "log_updates")):
+        return _("集群 {} 的从库 {}:{} 的 {} 不是 1").format(cluster.id, host, port, variable)
+    return ""
+
+
+def _slave_replica_message(cluster, source, task_mode: str) -> str:
+    if (source.source_role or "").strip() != "slave":
+        return ""
+    if cluster is None:
+        return _("集群 {} 不存在").format(source.cluster_id)
+    try:
+        slave_host, slave_port = resolve_source_endpoint(source, cluster)
+        master_host, master_port = resolve_cluster_master_endpoint(cluster)
+    except ValueError as exc:
+        return str(exc)
+    replica_error = _replica_status_error(cluster, slave_host, slave_port, master_host, master_port)
+    if replica_error:
+        return replica_error
+    if not task_mode_runs_incremental(task_mode):
+        return ""
+    return _slave_log_error(cluster, slave_host, slave_port)
+
+
 class MysqlDtsMigrateFlowValidator(MysqlBaseValidator):
     @validator_log_format
     def _emit_error(self, message: str):
@@ -399,6 +507,15 @@ class MysqlDtsMigrateFlowValidator(MysqlBaseValidator):
             return ""
         return _format_non_table_objects(source.cluster_id, rows)
 
+    def _source_role_errors(self, plans, clusters: dict) -> list:
+        errors = []
+        for index, spec, source in _iter_sources(plans):
+            task_mode = spec.dts_task_config.task_mode if spec.dts_task_config else ""
+            message = _slave_replica_message(clusters.get(source.cluster_id), source, task_mode)
+            if message:
+                errors.append(self._row_error(index, message))
+        return errors
+
     def __call__(self):
         plans = _plans_from_details(self.data)
         clusters = _load_clusters(_collect_cluster_ids(plans))
@@ -407,4 +524,5 @@ class MysqlDtsMigrateFlowValidator(MysqlBaseValidator):
         errors.extend(self._engine_errors(plans, clusters))
         if self.data.get("check_non_table_object", True):
             errors.extend(self._non_table_errors(plans, clusters))
+        errors.extend(self._source_role_errors(plans, clusters))
         return errors or None

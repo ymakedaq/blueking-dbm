@@ -17,7 +17,11 @@ from django.utils.translation import gettext as _
 
 from backend.db_meta.models import Cluster
 from backend.flow.utils.mysql.dts.constants import MYSQL_DTS_MASTER_PORT
-from backend.flow.utils.mysql.dts.migrate_helper import resolve_source_endpoint
+from backend.flow.utils.mysql.dts.migrate_helper import (
+    resolve_cluster_master_endpoint,
+    resolve_source_endpoint,
+    task_mode_runs_incremental,
+)
 from backend.flow.utils.mysql.dts.migrate_plan import DtsMigratePlan, DtsTaskSpec, SyncScope
 
 
@@ -65,6 +69,31 @@ def merge_task_sync_scopes(task_spec: DtsTaskSpec) -> dict[str, Any]:
     return sync_scope_to_dict(task_spec.sources[0].sync_scope)
 
 
+def _cutover_source_endpoint(
+    source_spec,
+    cluster: Cluster,
+    task_mode: str,
+    dts_user: str,
+    dts_password: str,
+) -> dict[str, Any]:
+    host, port = resolve_source_endpoint(source_spec, cluster)
+    endpoint = {
+        "host": host,
+        "port": port,
+        "user": dts_user,
+        "password": dts_password,
+        "source_name": source_spec.source_name,
+        "sync_scope": sync_scope_to_dict(source_spec.sync_scope),
+    }
+    role = (source_spec.source_role or "").strip()
+    if role == "slave" and task_mode_runs_incremental(task_mode):
+        master_host, master_port = resolve_cluster_master_endpoint(cluster)
+        endpoint["host"] = master_host
+        endpoint["port"] = master_port
+        endpoint["replica"] = {"host": host, "port": port}
+    return endpoint
+
+
 def build_source_endpoints_for_cutover(
     *,
     task_spec: DtsTaskSpec,
@@ -74,20 +103,11 @@ def build_source_endpoints_for_cutover(
     """为 cutover payload 组装源端连接信息（临时账号；连接发起方=dts-master）。"""
     if not dts_user or not dts_password:
         raise ValueError(_("cutover 组装失败：临时账号 dts_user/dts_password 为空"))
+    task_mode = task_spec.dts_task_config.task_mode if task_spec.dts_task_config else ""
     endpoints: list[dict[str, Any]] = []
     for source_spec in task_spec.sources:
         cluster = Cluster.objects.get(id=source_spec.cluster_id)
-        host, port = resolve_source_endpoint(source_spec, cluster)
-        endpoints.append(
-            {
-                "host": host,
-                "port": port,
-                "user": dts_user,
-                "password": dts_password,
-                "source_name": source_spec.source_name,
-                "sync_scope": sync_scope_to_dict(source_spec.sync_scope),
-            }
-        )
+        endpoints.append(_cutover_source_endpoint(source_spec, cluster, task_mode, dts_user, dts_password))
     if not endpoints:
         raise ValueError(_("cutover 组装失败：source_endpoints 为空"))
     return endpoints
