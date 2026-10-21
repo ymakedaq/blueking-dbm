@@ -44463,8 +44463,8 @@ msgid "初始化中控路由（仅中控）"
 msgstr "Initialize central control routing (central control only)"
 
 #: backend/flow/engine/bamboo/scene/spider/spider_layer_disaster_recover_flow.py:309
-msgid "刷新 Spider 与分片路由"
-msgstr "Refresh spider and shard routing"
+msgid "在中控登记 Spider 与分片路由（不下发 Spider 节点）"
+msgstr "Register spider and shard routing on central control (not pushed to spider nodes)"
 
 #: backend/flow/engine/bamboo/scene/spider/spider_layer_disaster_recover_flow.py:322
 msgid "[{}] master 路由段"

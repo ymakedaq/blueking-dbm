@@ -11,6 +11,8 @@ from backend.ticket.builders.common.base import BaseOperateResourceParamBuilder,
 from backend.ticket.builders.tendbcluster.base import BaseTendbTicketFlowBuilder, TendbBaseOperateDetailSerializer
 from backend.ticket.constants import TicketType
 
+SPIDER_SLAVE_NEW_KEY = "spider_slave_new_ip_list"
+
 
 class SpiderLayerDisasterRecoverDetailSerializer(TendbBaseOperateDetailSerializer):
     class SpiderDrInfoSerializer(serializers.Serializer):
@@ -41,13 +43,20 @@ class TendbClusterSpiderLayerDrResourceParamBuilder(BaseOperateResourceParamBuil
             role="spider_master_new_ip_list", remain_machine_type=MachineType.PROXY, replace_key="proxy", tolerance=0.5
         )
 
+    @staticmethod
+    def is_slave_role(info: dict) -> bool:
+        """按资源申请角色判断本条 info 重建的是 spider_slave 还是 spider_master"""
+        return SPIDER_SLAVE_NEW_KEY in (info.get("resource_spec") or {}) or bool(info.get(SPIDER_SLAVE_NEW_KEY))
+
     def post_callback(self):
         next_flow = self.ticket.next_flow()
         infos = next_flow.details.get("ticket_data", {}).get("infos", [])
         for info in infos:
             if "old_nodes" in info:
                 old_nodes_dict = info.pop("old_nodes")
-                info["spider_master_old_ip_list"] = old_nodes_dict.get("proxy", [])
+                # 前端无论重建哪个角色，旧机器都放在 old_nodes.proxy，这里按角色映射到流程所需字段
+                old_key = "spider_slave_old_ip_list" if self.is_slave_role(info) else "spider_master_old_ip_list"
+                info[old_key] = old_nodes_dict.get("proxy", [])
 
         next_flow.save(update_fields=["details"])
 
@@ -60,4 +69,7 @@ class SpiderLayerDisasterRecoverFlowBuilder(BaseTendbTicketFlowBuilder):
     inner_flow_builder = SpiderLayerDisasterRecoverFlowParamBuilder
     inner_flow_name = _("TenDB Cluster 接入层灾难重建")
     resource_batch_apply_builder = TendbClusterSpiderLayerDrResourceParamBuilder
+    # 提单时从 infos[].old_nodes 提取旧 spider（master 或 slave）写入 recycle_hosts，
+    # 单据成功后由 TicketFlowManager 自动派生主机回收单据（RECYCLE_OLD_HOST）
+    need_patch_recycle_host_details = True
     # validator = SpiderController.tendbcluster_spider_layer_disaster_recover_scene.validator

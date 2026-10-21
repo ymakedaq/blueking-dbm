@@ -421,12 +421,8 @@ class MysqlActPayload(PayloadHandler, ProxyActPayload, TBinlogDumperActPayload):
             "tdbctl_user": self.cluster["tdbctl_user"],
             "tdbctl_pass": self.cluster["tdbctl_pass"],
         }
-        if self.cluster.get("also_import_to_spider"):
-            extend["also_import_to_spider"] = True
-        if self.cluster.get("spider_schema_only"):
-            extend["spider_schema_only"] = True
-        if self.cluster.get("spider_peer_push_hosts"):
-            extend["spider_peer_push_hosts"] = self.cluster["spider_peer_push_hosts"]
+        if self.cluster.get("is_spider_layer_disaster_recover"):
+            extend["is_spider_layer_disaster_recover"] = True
         return {
             "db_type": DBActuatorTypeEnum.SpiderCtl.value,
             "action": DBActuatorActionEnum.ImportSchemaToTdbctl.value,

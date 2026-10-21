@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from django.utils.translation import gettext as _
 
 from backend.configuration.constants import DBType
+from backend.constants import IP_PORT_DIVIDER
 from backend.db_meta.enums import ClusterEntryRole, ClusterType, TenDBClusterSpiderRole
 from backend.db_meta.models import Cluster
 from backend.db_report.mysql_backup.handers import MySQLBackupHandler
@@ -41,6 +42,7 @@ from backend.flow.plugins.components.collections.spider.add_system_user_in_clust
     AddSystemUserInClusterComponent,
 )
 from backend.flow.plugins.components.collections.spider.spider_db_meta import SpiderDBMetaComponent
+from backend.flow.plugins.components.collections.spider.spider_flush_routing import SpiderFlushRoutingComponent
 from backend.flow.plugins.components.collections.spider.spider_layer_disaster_recover_route_preview import (
     SpiderLayerDisasterRecoverRoutePreviewComponent,
 )
@@ -60,8 +62,9 @@ from backend.flow.utils.spider.spider_disaster_recover import (
     build_mysql_ip_list_and_ports,
     get_shard_zero_remote_master,
     get_spider_pkg_id_for_layer_disaster_recover,
-    resolve_running_ctl_ip_strict,
+    resolve_ctl_primary_ip,
     resolve_spider_ctl_ports,
+    slave_only_recover_cluster_ids,
 )
 from backend.ticket.constants import TicketType
 
@@ -75,7 +78,7 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
     支持三种恢复场景（由 info 中 spider_master_new_ip_list / spider_slave_new_ip_list 是否非空自动判定）：
       1. 仅恢复 spider_master：spider_master_new_ip_list 非空，spider_slave_new_ip_list 为空
       2. 仅恢复 spider_slave：spider_slave_new_ip_list 非空，spider_master_new_ip_list 为空
-                              （要求中控 RUNNING 且 DRS 探活通过，由 Validator 与 Flow 双层校验）
+                              （路由连 tdbctl primary，并在该中控创建临时账号）
       3. 同时恢复 master + slave：两者都非空，按"安装并行 + 路由串行（master 先 / slave 后）"五阶段编排
 
     调用参数样板（与 ticket_data 同形，可直接 POST 至 /apis/v1/flow/scene/spider_layer_disaster_recover）：
@@ -241,45 +244,24 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
         cluster_ticket: dict,
     ) -> Any:
         """
-        Stage 2 - master 路由段：DBMeta 写入 → 表结构同步 → 权限恢复 → init_tdbctl_routing(×2)。
+        Stage 2 - master 路由段：DBMeta 写入 → init_tdbctl_routing(×2) → 路由下发至 Spider（TDBCTL FLUSH ROUTING）
+        → 表结构同步 → 权限恢复 → 主域名绑定。
         必须在 Stage 1 安装段完成后串行执行；slave 路由段必须等本段完成。
 
-        DBMeta 写入提前到表结构同步之前：表结构同步内的"安装临时备份程序"会通过 ORM 查 Machine 表
-        （get_install_tmp_db_backup_payload 取 machine_type / cluster_type），新机器必须先在 DBMeta 中。
-        add_spiders 用 api.machine.create 写入，对重复 IP 幂等（重试单据安全）。
+        表结构在第二次路由初始化之后导入。此时 mysql.servers 已有 Remote 和 Spider，中控才能以 tc_admin=1 分发；
+        且必须在表结构导入前先执行 TDBCTL FLUSH ROUTING，让 Spider 本地 mysql.servers 拥有 SPT 分片条目，
+        否则 tc_admin=1 转发建表时报 Error 1477: Data source error: SPT0。
+        DBMeta 仍先于安装临时备份程序：该步骤通过 ORM 查 Machine 表。
+        域名绑定必须在路由下发之后：安装段（cold 模式）不再绑域名，避免域名指向无路由/无表结构的节点。
         """
         seg = SubBuilder(root_id=self.root_id, data=cluster_ticket)
 
-        # 提前写入 DBMeta：让后续表结构同步 act 能从 Machine 表查到新机器
         seg.add_act(
             act_name=_("更新 DBMeta（新增 Spider Master）"),
             act_component_code=SpiderDBMetaComponent.code,
             kwargs=asdict(DBMetaOPKwargs(db_meta_class_func=SpiderDBMeta.add_spider_master_nodes_apply.__name__)),
         )
 
-        if not info.get("skip_schema_sync", False):
-            self._add_schema_sync_acts(
-                seg=seg,
-                cluster=cluster,
-                new_masters=new_masters,
-                primary_ctl_ip=primary_ctl_ip,
-                spider_port=spider_port,
-                ctl_port=ctl_port,
-                cluster_ticket=cluster_ticket,
-            )
-
-        # master 段权限恢复（仅在 from_spider_grant_backup 模式下生效）
-        self._maybe_add_priv_recover(
-            seg=seg,
-            cluster=cluster,
-            info=info,
-            target_role=TenDBClusterSpiderRole.SPIDER_MASTER.value,
-            restore_ips=[h["ip"] for h in new_masters],
-            spider_port=spider_port,
-            ctl_port=ctl_port,
-        )
-
-        # 由 master 安装段写入；slave-only 场景不会进入本段
         tdbctl_pass = cluster_ticket["tdbctl_pass"]
         routing_extend = build_append_deploy_style_routing_extend(
             cluster=cluster,
@@ -306,7 +288,7 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
         )
         routing_extend["only_init_ctl"] = False
         seg.add_act(
-            act_name=_("刷新 Spider 与分片路由"),
+            act_name=_("在中控登记 Spider 与分片路由（不下发 Spider 节点）"),
             act_component_code=ExecuteDBActuatorScriptComponent.code,
             kwargs=asdict(
                 ExecActuatorKwargs(
@@ -319,6 +301,51 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
                 )
             ),
         )
+
+        # 必须在表结构导入前把路由下发到 Spider 节点：
+        # 中控以 tc_admin=1 导入表结构时 DDL 会转发到 Spider 建表，SPIDER 表引用的 foreign server
+        # （SPT0 等分片名）必须已存在于 Spider 本地 mysql.servers，否则报
+        # Error 1477: The foreign server name you are trying to reference does not exist. Data source error: SPT0
+        seg.add_act(
+            act_name=_("中控路由下发至 Spider 节点"),
+            act_component_code=SpiderFlushRoutingComponent.code,
+            kwargs={"cluster_id": cluster.id, "ctl_primary": f"{primary_ctl_ip}{IP_PORT_DIVIDER}{ctl_port}"},
+        )
+
+        if not info.get("skip_schema_sync", False):
+            self._add_schema_sync_acts(
+                seg=seg,
+                cluster=cluster,
+                primary_ctl_ip=primary_ctl_ip,
+                spider_port=spider_port,
+                ctl_port=ctl_port,
+                cluster_ticket=cluster_ticket,
+            )
+
+        self._maybe_add_priv_recover(
+            seg=seg,
+            cluster=cluster,
+            info=info,
+            target_role=TenDBClusterSpiderRole.SPIDER_MASTER.value,
+            restore_ips=[h["ip"] for h in new_masters],
+            spider_port=spider_port,
+            ctl_port=ctl_port,
+        )
+
+        # 路由/表结构/权限全部就绪后，再把主域名解析绑回新 Spider，避免域名指向不可用节点
+        master_entry_sub = BuildEntrysManageSubflow(
+            root_id=self.root_id,
+            ticket_data=self.data,
+            op_type=DnsOpType.CREATE,
+            param={
+                "cluster_id": cluster.id,
+                "port": spider_port,
+                "add_ips": [h["ip"] for h in new_masters],
+                "entry_role": [ClusterEntryRole.MASTER_ENTRY.value],
+            },
+        )
+        if master_entry_sub:
+            seg.add_sub_pipeline(sub_flow=master_entry_sub)
         return seg.build_sub_process(sub_name=_("[{}] master 路由段").format(cluster.immute_domain))
 
     def _build_slave_routing_segment(
@@ -372,6 +399,22 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
             act_component_code=SpiderDBMetaComponent.code,
             kwargs=asdict(DBMetaOPKwargs(db_meta_class_func=SpiderDBMeta.add_spider_slave_nodes_apply.__name__)),
         )
+
+        # 路由登记/权限/元数据就绪后，绑定从域名解析到新 Spider Slave
+        # （add_spider_slaves_sub_flow cold 模式跳过了从域名绑定，Pre-Stage 仅摘除旧 IP，此处统一补齐）
+        slave_entry_sub = BuildEntrysManageSubflow(
+            root_id=self.root_id,
+            ticket_data=self.data,
+            op_type=DnsOpType.CREATE,
+            param={
+                "cluster_id": cluster.id,
+                "port": spider_port,
+                "add_ips": [h["ip"] for h in new_slaves],
+                "entry_role": [ClusterEntryRole.SLAVE_ENTRY.value],
+            },
+        )
+        if slave_entry_sub:
+            seg.add_sub_pipeline(sub_flow=slave_entry_sub)
         return seg.build_sub_process(sub_name=_("[{}] slave 路由段").format(cluster.immute_domain))
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -382,15 +425,13 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
         *,
         seg: SubBuilder,
         cluster: Cluster,
-        new_masters: List[dict],
         primary_ctl_ip: str,
         spider_port: int,
         ctl_port: int,
         cluster_ticket: dict,
     ) -> None:
-        """主中控机上 mysqldump 表结构 + 推送至 peer Spider。"""
+        """主中控机上 mysqldump 表结构，并由中控以 tc_admin=1 分发。"""
         shard_host, shard_port = get_shard_zero_remote_master(cluster)
-        spider_master_ips = [h["ip"] for h in new_masters]
         media_getter = GetFileList(db_type=DBType.MySQL)
         schema_media_list = media_getter.get_db_actuator_package() + media_getter.get_mysql_surrounding_apps_package(
             is_install_backup=True,
@@ -423,9 +464,7 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
             ),
         )
 
-        # 表结构同步只在 master 路由段调用，前置 master 安装段已写入 tdbctl_pass
         tdbctl_pass = cluster_ticket["tdbctl_pass"]
-        # 上架 Spider 多于 1：主节点 mysqldump 一次后由 mysql 客户端推送到其它 Spider（spider_master_ips[1:] 可为空时仅灌主 Spider）
         schema_cluster_base = {
             "ctl_port": ctl_port,
             "spider_port": spider_port,
@@ -437,11 +476,10 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
             "shard_0_port": shard_port,
             "tdbctl_user": TDBCTL_USER,
             "tdbctl_pass": tdbctl_pass,
-            "also_import_to_spider": True,
-            "spider_peer_push_hosts": spider_master_ips[1:],
+            "is_spider_layer_disaster_recover": True,
         }
         seg.add_act(
-            act_name=_("从 Remote 同步表结构至中控、本机 Spider 并推送至其它 Spider（主）"),
+            act_name=_("从 Remote 同步表结构至中控"),
             act_component_code=ExecuteDBActuatorScriptComponent.code,
             kwargs=asdict(
                 ExecActuatorKwargs(
@@ -474,12 +512,24 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
         # 缺省视为 from_spider_grant_backup，与 Serializer/Validator 默认值保持一致（兼容直调 FlowTestView）
         mode = info.get("privilege_recovery_mode") or "from_spider_grant_backup"
         if mode != "from_spider_grant_backup":
+            logger.warning(
+                _("集群 {} 的 {} 段跳过权限恢复：privilege_recovery_mode={} 非 from_spider_grant_backup").format(
+                    cluster.id, target_role, mode
+                )
+            )
             return
         handler = MySQLBackupHandler(cluster_id=cluster.id, deadlines_days=7)
         backup_info = handler.get_tendbcluster_spider_layer_grant_priv_backup_info(
             spider_priv_backup_id=info.get("spider_priv_backup_id") or None,
         )
         if not backup_info:
+            logger.warning(
+                _(
+                    "集群 {} 的 {} 段跳过权限恢复：{} 天内未找到 spider/tdbctl 的 grant 备份记录"
+                    "（mysql_role in [spider_master, TDBCTL] 且 data_schema_grant=grant），"
+                    "可先触发接入层 grant 备份或改用 account_rules_only 模式"
+                ).format(cluster.id, target_role, handler.deadlines_days)
+            )
             return
         role = (backup_info or {}).get("mysql_role") or ""
         # slave 节点无中控实例，TDBCTL 角色备份的 grant 文件按 ctl_port 恢复在 slave 上必然失败，跳过
@@ -524,11 +574,11 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
         for h in slave_new:
             h["pkg_id"] = pkg_id
 
-        # 同时恢复时 primary_ctl_ip 取新 master 第 1 台；仅恢复 slave 时探活取现存中控
+        # 同时恢复时 primary_ctl_ip 取新 master 第 1 台；仅恢复 slave 时取 tdbctl primary
         if recover_master:
             primary_ctl_ip = master_new[0]["ip"]
         else:
-            primary_ctl_ip = resolve_running_ctl_ip_strict(cluster)
+            primary_ctl_ip = resolve_ctl_primary_ip(cluster)
 
         cluster_ticket = self._build_cluster_ticket(
             cluster=cluster,
@@ -763,9 +813,11 @@ class TenDBClusterSpiderLayerDisasterRecoverFlow(TenDBClusterAddNodesFlow, TenDB
     # 入口
     # ─────────────────────────────────────────────────────────────────────────
     def spider_layer_disaster_recover(self):
+        cluster_ids = slave_only_recover_cluster_ids(self.data["infos"])
         pipeline = Builder(
             root_id=self.root_id,
             data=self.data,
+            need_random_pass_cluster_ids=cluster_ids or None,
         )
         sub_list = [self._cluster_sub_flow(info) for info in self.data["infos"]]
         pipeline.add_parallel_sub_pipeline(sub_flow_list=sub_list)
