@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.configuration.constants import DBType
-from backend.db_meta.enums import AccessLayer, ClusterType, MachineType
+from backend.db_meta.enums import AccessLayer, ClusterType, MachineType, TenDBClusterSpiderRole
 from backend.db_meta.enums.version_phase import VersionPhase
 from backend.db_meta.models import Cluster, DBModule
 from backend.db_meta.models.db_version import DBVersion, Distribution, VersionSeries
@@ -21,7 +21,8 @@ from backend.db_package.models import Package
 from backend.db_services.ipchooser.constants import BkOsType
 from backend.flow.consts import MediumEnum
 from backend.tests.mock_data import constant
-from backend.ticket.builders import ResourceApplyParamBuilder
+from backend.ticket.builders import BuilderFactory, ResourceApplyParamBuilder
+from backend.ticket.constants import TicketType
 
 pytestmark = pytest.mark.django_db
 
@@ -160,3 +161,123 @@ class TestPatchModuleOsParams:
         patched = builder.ticket_data["infos"]
         assert patched[0]["resource_spec"]["new_slave"]["os_names"] == ["tlinux-3.2"]
         assert patched[1]["resource_spec"]["new_slave"]["os_names"] == ["tlinux-4"]
+
+
+class TestMysqlProxyResourceOsParams:
+    @pytest.mark.parametrize(
+        "ticket_type, role, cluster_key",
+        [
+            (TicketType.MYSQL_PROXY_ADD, "new_proxies", "cluster_ids"),
+            (TicketType.MYSQL_PROXY_SWITCH, "target_proxies", "cluster_ids"),
+            (TicketType.MYSQL_PROXY_MIGRATE, "target_proxies", "cluster_ids"),
+            (TicketType.MYSQL_PROXY_MIGRATE_INS, "target_proxies", "cluster_ids"),
+            (TicketType.MYSQL_PROXY_CONF_CHANGE, "target_proxies", "cluster_ids"),
+            (TicketType.MYSQL_DBHA_AF_PROXY_REPLACE, "target_proxies", "cluster_ids"),
+            (TicketType.MYSQL_PROXY_RESCUE, "new_proxies", "cluster_id"),
+        ],
+    )
+    def test_proxy_tickets_patch_proxy_layer_os(self, ticket_type, role, cluster_key):
+        backend = _make_version(MediumEnum.MySQL.value, "8.0.32.0.0.21", ["tlinux-3.2"])
+        proxy = _make_version(MediumEnum.MySQLProxy.value, "0.82.19.0.0.21", ["tlinux-3.2", "tlinux-4"])
+        module = _make_module(
+            "proxy-os",
+            ClusterType.TenDBHA.value,
+            {MachineType.BACKEND.value: (backend, []), MachineType.PROXY.value: (proxy, [])},
+        )
+        cluster = _make_cluster("proxy-os", module)
+        cluster_value = [cluster.id] if cluster_key == "cluster_ids" else cluster.id
+        info = {
+            cluster_key: cluster_value,
+            "old_nodes": {"proxy": []},
+            "resource_spec": {role: {"spec_id": 1, "count": 2}},
+        }
+
+        resource_builder_cls = BuilderFactory.registry[ticket_type].resource_batch_apply_builder
+        builder = resource_builder_cls(SimpleNamespace(details={"infos": [info]}))
+        builder.format()
+
+        resource_spec = builder.ticket_data["infos"][0]["resource_spec"][role]
+        assert resource_spec["os_type"] == BkOsType.LINUX.value
+        assert resource_spec["os_names"] == ["tlinux-3.2", "tlinux-4"]
+
+    def test_proxy_ticket_keeps_legacy_module_unchanged(self):
+        legacy = DBModule.objects.create(
+            bk_biz_id=constant.BK_BIZ_ID,
+            db_module_name="proxy-legacy",
+            alias_name="proxy-legacy",
+            cluster_type=ClusterType.TenDBHA.value,
+            **_AUDIT,
+        )
+        cluster = _make_cluster("proxy-legacy", legacy)
+        info = {"cluster_ids": [cluster.id], "resource_spec": {"new_proxies": {"spec_id": 1, "count": 2}}}
+
+        resource_builder_cls = BuilderFactory.registry[TicketType.MYSQL_PROXY_ADD].resource_batch_apply_builder
+        builder = resource_builder_cls(SimpleNamespace(details={"infos": [info]}))
+        builder.format()
+
+        resource_spec = builder.ticket_data["infos"][0]["resource_spec"]["new_proxies"]
+        assert "os_type" not in resource_spec
+        assert "os_names" not in resource_spec
+
+
+class TestTendbSpiderResourceOsParams:
+    @staticmethod
+    def _make_spider_cluster(name: str, with_version: bool = True) -> Cluster:
+        layers = {}
+        if with_version:
+            remote = _make_version(MediumEnum.MySQL.value, "8.0.32.0.0.31", ["tlinux-3.2"])
+            spider = _make_version(MediumEnum.Spider.value, "3.8.5.0.0.31", ["tlinux-3.2", "tlinux-4"])
+            layers = {MachineType.REMOTE.value: (remote, []), MachineType.SPIDER.value: (spider, [])}
+        return _make_cluster(name, _make_module(name, ClusterType.TenDBCluster.value, layers))
+
+    @staticmethod
+    def _format(ticket_type: str, role: str, cluster: Cluster) -> dict:
+        """按单据实际挂的资源申请 builder 补参，返回该角色的申请参数"""
+        info = {
+            "cluster_id": cluster.id,
+            "add_spider_role": TenDBClusterSpiderRole.SPIDER_MASTER.value,
+            "switch_spider_role": role,
+            "spider_old_ip_list": [],
+            "old_nodes": {"proxy": []},
+            "resource_spec": {role: {"spec_id": 1, "count": 2}},
+        }
+        resource_builder_cls = BuilderFactory.registry[ticket_type].resource_batch_apply_builder
+        builder = resource_builder_cls(SimpleNamespace(details={"infos": [info]}))
+        builder.format()
+        return builder.ticket_data["infos"][0]["resource_spec"][role]
+
+    @pytest.mark.parametrize(
+        "ticket_type, role",
+        [
+            (TicketType.TENDBCLUSTER_SPIDER_ADD_NODES, "spider_ip_list"),
+            (TicketType.TENDBCLUSTER_SPIDER_SLAVE_APPLY, "spider_slave_ip_list"),
+            (TicketType.TENDBCLUSTER_SPIDER_LAYER_DR, "spider_master_new_ip_list"),
+            (TicketType.TENDBCLUSTER_SPIDER_SWITCH_NODES, TenDBClusterSpiderRole.SPIDER_MASTER.value),
+            (TicketType.TENDBCLUSTER_SPIDER_SWITCH_NODES, TenDBClusterSpiderRole.SPIDER_SLAVE.value),
+            (TicketType.MYSQL_DBHA_AF_SPIDER_REPLACE, TenDBClusterSpiderRole.SPIDER_MASTER.value),
+            (TicketType.TENDBCLUSTER_SPIDER_CONF_UP_DOWN, TenDBClusterSpiderRole.SPIDER_MASTER.value),
+            (TicketType.TENDBCLUSTER_SPIDER_CONF_UP_DOWN, TenDBClusterSpiderRole.SPIDER_SLAVE.value),
+        ],
+    )
+    def test_spider_tickets_patch_spider_layer_os(self, ticket_type, role):
+        cluster = self._make_spider_cluster("spider-os")
+
+        resource_spec = self._format(ticket_type, role, cluster)
+
+        assert resource_spec["os_type"] == BkOsType.LINUX.value
+        assert resource_spec["os_names"] == ["tlinux-3.2", "tlinux-4"]
+
+    @pytest.mark.parametrize(
+        "ticket_type, role",
+        [
+            (TicketType.TENDBCLUSTER_SPIDER_ADD_NODES, "spider_ip_list"),
+            (TicketType.TENDBCLUSTER_SPIDER_SWITCH_NODES, TenDBClusterSpiderRole.SPIDER_MASTER.value),
+        ],
+    )
+    def test_spider_ticket_keeps_legacy_module_unchanged(self, ticket_type, role):
+        cluster = self._make_spider_cluster("spider-legacy", with_version=False)
+
+        resource_spec = self._format(ticket_type, role, cluster)
+
+        assert "os_type" not in resource_spec
+        assert "os_names" not in resource_spec

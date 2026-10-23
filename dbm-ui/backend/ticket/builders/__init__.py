@@ -405,6 +405,10 @@ class ResourceApplyParamBuilder(CallBackBuilderMixin):
         @param db_module: 集群所属模块
         @param access_layer: 角色所在层，存储层或接入层
         """
+        # 不存在模块，则跳过
+        if not db_module:
+            return
+
         # 不存在该角色的资源池申请，或是手动选择主机，则跳过
         if not resource_spec.get(role) or "hosts" in resource_spec[role]:
             return
@@ -435,8 +439,7 @@ class ResourceApplyParamBuilder(CallBackBuilderMixin):
         for info in infos:
             cluster = cluster_map[fetch_cluster_ids(info)[0]]
             db_module = module_map.get(cluster.db_module_id)
-            if db_module:
-                self.patch_module_os_params(info.get("resource_spec", {}), role, db_module, access_layer)
+            self.patch_module_os_params(info.get("resource_spec", {}), role, db_module, access_layer)
 
 
 class RecycleCleanMachineParamBuilder(FlowParamBuilder):
