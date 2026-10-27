@@ -13,9 +13,16 @@ from types import SimpleNamespace
 import pytest
 
 from backend.configuration.constants import DBType
-from backend.db_meta.enums import AccessLayer, ClusterType, MachineType, TenDBClusterSpiderRole
+from backend.db_meta.enums import (
+    AccessLayer,
+    ClusterType,
+    InstanceInnerRole,
+    InstanceRole,
+    MachineType,
+    TenDBClusterSpiderRole,
+)
 from backend.db_meta.enums.version_phase import VersionPhase
-from backend.db_meta.models import Cluster, DBModule
+from backend.db_meta.models import BKCity, Cluster, DBModule, Machine, StorageInstance
 from backend.db_meta.models.db_version import DBVersion, Distribution, VersionSeries
 from backend.db_package.models import Package
 from backend.db_services.ipchooser.constants import BkOsType
@@ -161,6 +168,87 @@ class TestPatchModuleOsParams:
         patched = builder.ticket_data["infos"]
         assert patched[0]["resource_spec"]["new_slave"]["os_names"] == ["tlinux-3.2"]
         assert patched[1]["resource_spec"]["new_slave"]["os_names"] == ["tlinux-4"]
+
+
+class TestStorageResourceOsParams:
+    # 各集群类型存储层在模块版本里对应的组件
+    STORAGE_COMPONENT = {
+        ClusterType.TenDBSingle.value: MachineType.SINGLE.value,
+        ClusterType.TenDBHA.value: MachineType.BACKEND.value,
+        ClusterType.TenDBCluster.value: MachineType.REMOTE.value,
+    }
+
+    @classmethod
+    def _make_storage_cluster(cls, name: str, cluster_type: str, with_version: bool = True) -> Cluster:
+        layers = {}
+        if with_version:
+            storage = _make_version(MediumEnum.MySQL.value, "8.0.32.0.0.41", ["tlinux-3.2", "tlinux-4"])
+            layers = {cls.STORAGE_COMPONENT[cluster_type]: (storage, [])}
+        return _make_cluster(name, _make_module(name, cluster_type, layers))
+
+    @staticmethod
+    def _add_master(cluster: Cluster):
+        """添加从库要按集群的 master 计算亲和性，集群下需要有一台 master"""
+        machine = Machine.objects.create(
+            ip="127.0.0.41",
+            bk_biz_id=constant.BK_BIZ_ID,
+            bk_host_id=41,
+            machine_type=MachineType.BACKEND.value,
+            access_layer=AccessLayer.STORAGE.value,
+            bk_city=BKCity.objects.first(),
+        )
+        master = StorageInstance.objects.create(
+            machine=machine,
+            port=20000,
+            instance_role=InstanceRole.BACKEND_MASTER.value,
+            instance_inner_role=InstanceInnerRole.MASTER.value,
+        )
+        master.cluster.add(cluster)
+
+    @staticmethod
+    def _format(ticket_type: str, role: str, cluster: Cluster) -> dict:
+        """按单据实际挂的资源申请 builder 补参，返回该角色的申请参数"""
+        info = {
+            "cluster_ids": [cluster.id],
+            "old_nodes": {"old_slave": []},
+            "resource_spec": {role: {"spec_id": 1, "count": 1}},
+        }
+        resource_builder_cls = BuilderFactory.registry[ticket_type].resource_batch_apply_builder
+        builder = resource_builder_cls(SimpleNamespace(details={"infos": [info]}))
+        builder.format()
+        return builder.ticket_data["infos"][0]["resource_spec"][role]
+
+    @pytest.mark.parametrize(
+        "ticket_type, role, cluster_type",
+        [
+            (TicketType.MYSQL_ADD_SLAVE, "new_slave", ClusterType.TenDBHA.value),
+            (TicketType.MYSQL_RESTORE_SLAVE, "new_slave", ClusterType.TenDBHA.value),
+            (TicketType.MYSQL_DBHA_AF_BACKEND_REPLACE, "new_slave", ClusterType.TenDBHA.value),
+            (TicketType.TENDBCLUSTER_RESTORE_SLAVE, "new_slave", ClusterType.TenDBCluster.value),
+            (TicketType.MYSQL_DBHA_AF_REMOTE_REPLACE, "new_slave", ClusterType.TenDBCluster.value),
+            (TicketType.MYSQL_MIGRATE_CLUSTER, "backend_group", ClusterType.TenDBHA.value),
+            (TicketType.MYSQL_MIGRATE_SINGLE, "bk_new_orphan", ClusterType.TenDBSingle.value),
+            (TicketType.TENDBCLUSTER_MIGRATE_CLUSTER, "backend_group", ClusterType.TenDBCluster.value),
+            (TicketType.TENDBCLUSTER_NODE_REBALANCE, "backend_group", ClusterType.TenDBCluster.value),
+        ],
+    )
+    def test_storage_tickets_patch_storage_layer_os(self, ticket_type, role, cluster_type):
+        cluster = self._make_storage_cluster("storage-os", cluster_type)
+        if ticket_type == TicketType.MYSQL_ADD_SLAVE:
+            self._add_master(cluster)
+
+        resource_spec = self._format(ticket_type, role, cluster)
+
+        assert resource_spec["os_type"] == BkOsType.LINUX.value
+        assert resource_spec["os_names"] == ["tlinux-3.2", "tlinux-4"]
+
+    def test_storage_ticket_keeps_legacy_module_unchanged(self):
+        cluster = self._make_storage_cluster("storage-legacy", ClusterType.TenDBHA.value, with_version=False)
+
+        resource_spec = self._format(TicketType.MYSQL_RESTORE_SLAVE, "new_slave", cluster)
+
+        assert "os_type" not in resource_spec
+        assert "os_names" not in resource_spec
 
 
 class TestMysqlProxyResourceOsParams:
