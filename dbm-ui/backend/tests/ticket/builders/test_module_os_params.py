@@ -369,3 +369,99 @@ class TestTendbSpiderResourceOsParams:
 
         assert "os_type" not in resource_spec
         assert "os_names" not in resource_spec
+
+
+class TestMigrateUpgradeResourceOsParams:
+    """迁移升级按单据选择的介质包 pkg_id 约束操作系统，与模块是否绑定版本无关"""
+
+    @staticmethod
+    def _make_package(pkg_type: str, permit_os_type: str, permit_os: list) -> Package:
+        return Package.objects.create(
+            name=f"{pkg_type}-upgrade.tar.gz",
+            version="8.0",
+            pkg_type=pkg_type,
+            db_type=DBType.MySQL.value,
+            path="/tmp/upgrade",
+            size=1,
+            md5="abc",
+            enable=True,
+            permit_os=permit_os,
+            permit_os_type=permit_os_type,
+            **_AUDIT,
+        )
+
+    @staticmethod
+    def _format(ticket_type: str, role: str, cluster_type: str, package: Package) -> dict:
+        """在未绑定版本的存量模块集群上提单，返回该角色的申请参数"""
+        legacy = DBModule.objects.create(
+            bk_biz_id=constant.BK_BIZ_ID,
+            db_module_name="upgrade-legacy",
+            alias_name="upgrade-legacy",
+            cluster_type=cluster_type,
+            **_AUDIT,
+        )
+        cluster = _make_cluster("upgrade-legacy", legacy)
+        cluster_key = "cluster_ids" if ticket_type == TicketType.MYSQL_MIGRATE_UPGRADE else "cluster_id"
+        cluster_value = [cluster.id] if cluster_key == "cluster_ids" else cluster.id
+        info = {
+            cluster_key: cluster_value,
+            "pkg_id": package.id,
+            "old_nodes": {},
+            "resource_spec": {role: {"spec_id": 1, "count": 1}},
+        }
+        resource_builder_cls = BuilderFactory.registry[ticket_type].resource_batch_apply_builder
+        builder = resource_builder_cls(SimpleNamespace(details={"infos": [info]}))
+        builder.format()
+        return builder.ticket_data["infos"][0]["resource_spec"][role]
+
+    @pytest.mark.parametrize(
+        "ticket_type, role, cluster_type, pkg_type",
+        [
+            (TicketType.MYSQL_MIGRATE_UPGRADE, "backend_group", ClusterType.TenDBHA.value, MediumEnum.MySQL.value),
+            (
+                TicketType.TENDBCLUSTER_MIGRATE_UPGRADE,
+                "backend_group",
+                ClusterType.TenDBCluster.value,
+                MediumEnum.MySQL.value,
+            ),
+            (
+                TicketType.TENDBCLUSTER_SPIDER_UPGRADE,
+                "spider_master",
+                ClusterType.TenDBCluster.value,
+                MediumEnum.Spider.value,
+            ),
+            (
+                TicketType.TENDBCLUSTER_SPIDER_UPGRADE,
+                "spider_slave",
+                ClusterType.TenDBCluster.value,
+                MediumEnum.Spider.value,
+            ),
+        ],
+    )
+    def test_upgrade_tickets_patch_package_os(self, ticket_type, role, cluster_type, pkg_type):
+        package = self._make_package(pkg_type, BkOsType.LINUX.value, ["tlinux-3.2", "tlinux-4"])
+
+        resource_spec = self._format(ticket_type, role, cluster_type, package)
+
+        assert resource_spec["os_type"] == BkOsType.LINUX.value
+        assert resource_spec["os_names"] == ["tlinux-3.2", "tlinux-4"]
+
+    def test_unrestricted_package_only_sets_os_type(self):
+        package = self._make_package(MediumEnum.MySQL.value, BkOsType.LINUX.value, [])
+
+        resource_spec = self._format(
+            TicketType.MYSQL_MIGRATE_UPGRADE, "backend_group", ClusterType.TenDBHA.value, package
+        )
+
+        assert resource_spec["os_type"] == BkOsType.LINUX.value
+        assert "os_names" not in resource_spec
+
+    def test_package_without_os_type_keeps_unchanged(self):
+        package = self._make_package(MediumEnum.MySQL.value, "", ["tlinux-3.2"])
+
+        resource_spec = self._format(
+            TicketType.MYSQL_MIGRATE_UPGRADE, "backend_group", ClusterType.TenDBHA.value, package
+        )
+
+        assert "os_type" not in resource_spec
+        assert "os_names" not in resource_spec
