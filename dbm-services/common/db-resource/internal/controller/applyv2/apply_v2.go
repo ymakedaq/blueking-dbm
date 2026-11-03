@@ -308,93 +308,61 @@ func applyGroupsInSameLocationV2(param RequestInputParamV2) (pickers []*apply.Pi
 	return nil, fmt.Errorf("no zone can satisfy all groups in same location")
 }
 
-// queryCandidatesV2 v2 查询候选机器（直接按云字段等值匹配）
+// queryCandidatesV2 v2 查询候选机器（复用 v1 匹配步骤 + 云区 MatchBkCloudLocationSpec）
 func queryCandidatesV2(forbizId int, rsType string, detail ObjectDetailV2) ([]model.TbRpDetail, error) {
 	var items []model.TbRpDetail
 	
+	// 构造 SearchContext，复用 v1 匹配逻辑
+	searchCtx := &apply.SearchContext{
+		ObjectDetail: &apply.ObjectDetail{
+			BkCloudId:     detail.BkCloudId,
+			GroupMark:     detail.GroupMark,
+			Affinity:      detail.Affinity,
+			Count:         detail.Count,
+			Spec:          detail.Spec,
+			StorageSpecs:  detail.StorageSpecs,
+			DeviceClass:   detail.DeviceClass,
+			Labels:        detail.Labels,
+			OsType:        detail.OsType,
+			OsNames:       detail.OsNames,
+			ExcludeOsName: detail.ExcludeOsName,
+		},
+		RsType:                 model.NormalizeResourceType(rsType),
+		IntentionBkBizId:       forbizId,
+		AffinityDimension:      detail.AffinityDimension,
+		BkCloudRegion:          detail.LocationSpec.BkCloudRegion,
+		BkCloudZoneList:        detail.LocationSpec.BkCloudZoneList,
+		ExcludeBkCloudZoneList: detail.LocationSpec.ExcludeBkCloudZoneList,
+	}
+	
 	db := model.DB.Self.Table(model.TbRpDetailName())
 	
-	// 基础状态过滤
-	db = db.Where("bk_cloud_id = ? AND status = ? AND gse_agent_status_code = ?",
-		detail.BkCloudId, model.Unused, bk.GseAlive)
+	// 基础过滤（状态 + GSE）
+	db.Where("bk_cloud_id = ? and status = ? and gse_agent_status_code = ?",
+		searchCtx.BkCloudId, model.Unused, bk.GseAlive)
 	
-	// 业务匹配
-	if forbizId <= 0 {
-		db = db.Where("dedicated_biz = 0")
-	} else {
-		db = db.Where("dedicated_biz in (?)", []int{0, forbizId})
-	}
+	// 复用 v1 匹配步骤
+	searchCtx.MatchIntentionBkBiz(db)
+	searchCtx.MatchRsType(db)
+	searchCtx.MatchOsType(db)
+	searchCtx.MatchOsName(db)
+	searchCtx.MatchLabels(db)
 	
-	// 资源类型匹配
-	if cmutil.IsEmpty(rsType) {
-		db = db.Where("rs_type = 'PUBLIC'")
-	} else {
-		db = db.Where("rs_type in (?)", []string{"PUBLIC", rsType})
-	}
+	// v2 显式调用云区匹配（新增能力）
+	searchCtx.MatchBkCloudLocationSpec(db)
 	
-	// OS 类型
-	osType := detail.OsType
-	if cmutil.IsEmpty(osType) {
-		osType = model.LinuxOs
-	}
-	db = db.Where("os_type = ?", osType)
-	
-	// OS 名称
-	if len(detail.OsNames) > 0 {
-		if detail.ExcludeOsName {
-			db = db.Where("os_name not in (?)", detail.OsNames)
-		} else {
-			db = db.Where("os_name in (?)", detail.OsNames)
-		}
-	}
-	
-	// 标签匹配
-	if len(detail.Labels) > 0 {
-		db = db.Where(model.JSONQuery("labels").JointOrContains(detail.Labels))
-	} else {
-		db = db.Where("JSON_TYPE(labels) is null OR JSON_LENGTH(labels) < 1")
-	}
-	
-	// v2 核心：云字段直接等值匹配（不走逻辑城转换）
-	if !detail.LocationSpec.IsEmpty() {
-		// bk_cloud_region 等值匹配
-		db = db.Where("bk_cloud_region = ?", detail.LocationSpec.BkCloudRegion)
-	
-	// bk_cloud_zone_list 匹配
-	if len(detail.LocationSpec.BkCloudZoneList) > 0 {
-		db = db.Where("bk_cloud_zone in (?)", detail.LocationSpec.BkCloudZoneList)
-	}
-	
-	// exclude zones
-	if len(detail.LocationSpec.ExcludeBkCloudZoneList) > 0 {
-		db = db.Where("bk_cloud_zone not in (?)", detail.LocationSpec.ExcludeBkCloudZoneList)
-	}
-	}
+	// 磁盘匹配（带挂载点的）
+	searchCtx.MatchStorage(db)
 	
 	// 规格匹配
-	if detail.Spec.NotEmpty() {
-		if detail.Spec.Cpu.IsNotEmpty() {
-			db = db.Where("cpu_num >= ? AND cpu_num <= ?", detail.Spec.Cpu.Min, detail.Spec.Cpu.Max)
-		}
-		if detail.Spec.Mem.IsNotEmpty() {
-			db = db.Where("dram_cap >= ? AND dram_cap <= ?", detail.Spec.Mem.Min, detail.Spec.Mem.Max)
-		}
-	}
-	
-	// 机型
-	if len(detail.DeviceClass) > 0 {
-		db = db.Where("device_class in (?)", detail.DeviceClass)
-	}
-	
-	// 磁盘规格（简化：只过滤有存储需求的基本匹配）
-	// 详细磁盘匹配在后续 filterEmptyMountPointStorageV2 中处理
+	searchCtx.MatchSpec(db)
 	
 	// 亲和性相关字段检查
 	switch detail.Affinity {
 	case apply.SAME_SUBZONE_CROSS_SWTICH:
-		db = db.Where("net_device_id != ''")
-	case apply.CROSS_RACK:
-		db = db.Where("rack_id != ''")
+		searchCtx.UseNetDeviceIsNotEmpty(db)
+	case apply.CROSS_RACK, apply.CROSS_SUBZONE_STRONG, apply.CROSS_SUBZONE_WEAK:
+		searchCtx.RackIdIsNotEmpty(db)
 	}
 	
 	// 执行查询
@@ -660,27 +628,31 @@ func diskDetailMatchV2(disk bk.DiskDetail, spec meta.DiskSpec) bool {
 	return true
 }
 
-// getAllAvailableZones 获取所有可用区（用于多组同位置）
+// getAllAvailableZones 获取所有可用区（用于多组同位置，复用 v1 匹配逻辑）
 func getAllAvailableZones(forbizId int, rsType string, detail ObjectDetailV2) ([]string, error) {
 	var zones []string
 	
+	// 构造 SearchContext，复用 v1 匹配逻辑
+	searchCtx := &apply.SearchContext{
+		ObjectDetail: &apply.ObjectDetail{
+			BkCloudId: detail.BkCloudId,
+		},
+		RsType:            model.NormalizeResourceType(rsType),
+		IntentionBkBizId:  forbizId,
+		BkCloudRegion:     detail.LocationSpec.BkCloudRegion,
+	}
+	
 	db := model.DB.Self.Table(model.TbRpDetailName()).Select("DISTINCT bk_cloud_zone")
-	db = db.Where("bk_cloud_id = ? AND status = ?", detail.BkCloudId, model.Unused)
 	
-	// 如果有 bk_cloud_region，加上过滤
-	if !detail.LocationSpec.IsEmpty() {
-		db = db.Where("bk_cloud_region = ?", detail.LocationSpec.BkCloudRegion)
-	}
+	// 基础过滤
+	db = db.Where("bk_cloud_id = ? AND status = ?", searchCtx.BkCloudId, model.Unused)
 	
-	if forbizId <= 0 {
-		db = db.Where("dedicated_biz = 0")
-	} else {
-		db = db.Where("dedicated_biz in (?)", []int{0, forbizId})
-	}
+	// 复用 v1 匹配步骤
+	searchCtx.MatchIntentionBkBiz(db)
+	searchCtx.MatchRsType(db)
 	
-	if !cmutil.IsEmpty(rsType) {
-		db = db.Where("rs_type in (?)", []string{"PUBLIC", rsType})
-	}
+	// 云区匹配（只需要 region 过滤）
+	searchCtx.MatchBkCloudLocationSpec(db)
 	
 	if err := db.Scan(&zones).Error; err != nil {
 		return nil, err

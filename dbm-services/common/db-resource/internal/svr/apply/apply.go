@@ -36,11 +36,15 @@ import (
 // SearchContext describe search context
 type SearchContext struct {
 	*ObjectDetail
-	RsType            string
-	IntentionBkBizId  int
-	IdcCitys          []string
-	SpecialSubZoneIds []string
-	SpecialHostIds    []int
+	RsType                   string
+	IntentionBkBizId         int
+	IdcCitys                 []string
+	SpecialSubZoneIds        []string
+	SpecialHostIds           []int
+	AffinityDimension        string
+	BkCloudRegion            string
+	BkCloudZoneList          []string
+	ExcludeBkCloudZoneList   []string
 }
 
 // applyGroupsInSameLocation apply groups in same location
@@ -749,6 +753,30 @@ func (o *SearchContext) MatchLocationSpec(db *gorm.DB) {
 	}
 	if len(o.LocationSpec.ExcludeNetDeviceIds) > 0 {
 		db.Where("net_device_id not in (?)", o.LocationSpec.ExcludeNetDeviceIds)
+	}
+}
+
+// MatchBkCloudLocationSpec 匹配云可用区位置（等值匹配 bk_cloud_region + zone list/exclude）
+// 字段全空则 no-op；维空踢选不在此函数做
+func (o *SearchContext) MatchBkCloudLocationSpec(db *gorm.DB) {
+	// 所有云区字段都为空时，no-op
+	if cmutil.IsEmpty(o.BkCloudRegion) && len(o.BkCloudZoneList) == 0 && len(o.ExcludeBkCloudZoneList) == 0 {
+		return
+	}
+
+	// bk_cloud_region 等值匹配
+	if !cmutil.IsEmpty(o.BkCloudRegion) {
+		db.Where("bk_cloud_region = ?", o.BkCloudRegion)
+	}
+
+	// bk_cloud_zone_list 等值匹配（IN）
+	if len(o.BkCloudZoneList) > 0 {
+		db.Where("bk_cloud_zone in (?)", o.BkCloudZoneList)
+	}
+
+	// exclude_bk_cloud_zone_list 等值排除（NOT IN）
+	if len(o.ExcludeBkCloudZoneList) > 0 {
+		db.Where("bk_cloud_zone not in (?)", o.ExcludeBkCloudZoneList)
 	}
 }
 
