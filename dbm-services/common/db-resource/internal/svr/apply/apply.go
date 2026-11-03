@@ -36,11 +36,15 @@ import (
 // SearchContext describe search context
 type SearchContext struct {
 	*ObjectDetail
-	RsType            string
-	IntentionBkBizId  int
-	IdcCitys          []string
-	SpecialSubZoneIds []string
-	SpecialHostIds    []int
+	RsType                   string
+	IntentionBkBizId         int
+	IdcCitys                 []string
+	SpecialSubZoneIds        []string
+	SpecialHostIds           []int
+	AffinityDimension        string
+	BkCloudRegion            string
+	BkCloudZoneList          []string
+	ExcludeBkCloudZoneList   []string
 }
 
 // applyGroupsInSameLocation apply groups in same location
@@ -464,8 +468,10 @@ func (o *SearchContext) PickCheckSpecialBkhostIds() (err error) {
 	return nil
 }
 
-// filterEmptyMountPointStorage 过滤没有挂载点的磁盘匹配需求
-func (o *SearchContext) filterEmptyMountPointStorage(items []model.TbRpDetail,
+// FilterEmptyMountPointStorage 过滤没有挂载点的磁盘匹配需求（导出供 v2 复用）
+// storageSpecs: 所有磁盘规格（用于计算已占用挂载点）
+// diskSpecs: 空挂载点规格（GetEmptyDiskSpec 返回的）
+func FilterEmptyMountPointStorage(items []model.TbRpDetail, storageSpecs []meta.DiskSpec,
 	diskSpecs []meta.DiskSpec) (ts []model.TbRpDetail, err error) {
 	for _, ins := range items {
 		if err = ins.UnmarshalDiskInfo(); err != nil {
@@ -474,21 +480,32 @@ func (o *SearchContext) filterEmptyMountPointStorage(items []model.TbRpDetail,
 		}
 		logger.Info("%v", ins.Storages)
 		noUseStorages := make(map[string]bk.DiskDetail)
-		smp := meta.GetDiskSpecMountPoints(o.StorageSpecs)
+		smp := meta.GetDiskSpecMountPoints(storageSpecs)
 		for mp, v := range ins.Storages {
 			if !slices.Contains(smp, mp) {
 				noUseStorages[mp] = v
 			}
 		}
 		logger.Info("no-use: %v", noUseStorages)
-		if matchNoMountPointStorage(diskSpecs, noUseStorages) {
+		if MatchNoMountPointStorage(diskSpecs, noUseStorages) {
 			ts = append(ts, ins)
 		}
 	}
 	if len(ts) == 0 {
-		return nil, errno.ErrResourceinsufficient.Add(fmt.Sprintf("匹配磁盘%s,的资源为 0", o.GetDiskMatchInfo()))
+		return nil, errno.ErrResourceinsufficient.Add("匹配空挂载点磁盘的资源为 0")
 	}
 	return ts, nil
+}
+
+// filterEmptyMountPointStorage 私有方法保持向后兼容
+func (o *SearchContext) filterEmptyMountPointStorage(items []model.TbRpDetail,
+	diskSpecs []meta.DiskSpec) (ts []model.TbRpDetail, err error) {
+	ts, err = FilterEmptyMountPointStorage(items, o.StorageSpecs, diskSpecs)
+	if err != nil && strings.Contains(err.Error(), "匹配空挂载点磁盘的资源为 0") {
+		// 替换错误消息为原来的格式
+		return nil, errno.ErrResourceinsufficient.Add(fmt.Sprintf("匹配磁盘%s,的资源为 0", o.GetDiskMatchInfo()))
+	}
+	return ts, err
 }
 
 // PickInstance match resource
@@ -752,6 +769,30 @@ func (o *SearchContext) MatchLocationSpec(db *gorm.DB) {
 	}
 }
 
+// MatchBkCloudLocationSpec 匹配云可用区位置（等值匹配 bk_cloud_region + zone list/exclude）
+// 字段全空则 no-op；维空踢选不在此函数做
+func (o *SearchContext) MatchBkCloudLocationSpec(db *gorm.DB) {
+	// 所有云区字段都为空时，no-op
+	if cmutil.IsEmpty(o.BkCloudRegion) && len(o.BkCloudZoneList) == 0 && len(o.ExcludeBkCloudZoneList) == 0 {
+		return
+	}
+
+	// bk_cloud_region 等值匹配
+	if !cmutil.IsEmpty(o.BkCloudRegion) {
+		db.Where("bk_cloud_region = ?", o.BkCloudRegion)
+	}
+
+	// bk_cloud_zone_list 等值匹配（IN）
+	if len(o.BkCloudZoneList) > 0 {
+		db.Where("bk_cloud_zone in (?)", o.BkCloudZoneList)
+	}
+
+	// exclude_bk_cloud_zone_list 等值排除（NOT IN）
+	if len(o.ExcludeBkCloudZoneList) > 0 {
+		db.Where("bk_cloud_zone not in (?)", o.ExcludeBkCloudZoneList)
+	}
+}
+
 // MatchStorage  match storage parameters
 func (o *SearchContext) MatchStorage(db *gorm.DB) {
 	if len(o.StorageSpecs) == 0 {
@@ -837,11 +878,12 @@ func isWindowsPath(path string) bool {
 	return strings.Contains(path, "\\")
 }
 
-func matchNoMountPointStorage(spec []meta.DiskSpec, sinc map[string]bk.DiskDetail) bool {
+// MatchNoMountPointStorage 检查空挂载点规格能否在未占用盘里全部匹配上（导出供 v2 复用）
+func MatchNoMountPointStorage(spec []meta.DiskSpec, sinc map[string]bk.DiskDetail) bool {
 	mcount := 0
 	for _, s := range spec {
 		for mp, d := range sinc {
-			if diskDetailMatch(d, s) {
+			if DiskDetailMatch(d, s) {
 				delete(sinc, mp)
 				mcount++
 				break
@@ -851,7 +893,8 @@ func matchNoMountPointStorage(spec []meta.DiskSpec, sinc map[string]bk.DiskDetai
 	return mcount == len(spec)
 }
 
-func diskDetailMatch(d bk.DiskDetail, s meta.DiskSpec) bool {
+// DiskDetailMatch 检查单个磁盘是否匹配规格（导出供 v2 复用）
+func DiskDetailMatch(d bk.DiskDetail, s meta.DiskSpec) bool {
 	if strings.TrimSpace(d.DiskType) != strings.TrimSpace(s.DiskType) && lo.IsNotEmpty(s.DiskType) {
 		logger.Info("disk type not match")
 		return false
