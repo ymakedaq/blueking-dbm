@@ -19,17 +19,28 @@ import (
 	"dbm-services/common/db-resource/internal/svr/bk"
 	"dbm-services/common/db-resource/internal/svr/dbmapi"
 	"dbm-services/common/db-resource/internal/svr/meta"
+	"dbm-services/common/go-pubpkg/cmutil"
 	"dbm-services/common/go-pubpkg/errno"
 	"dbm-services/common/go-pubpkg/logger"
 )
 
+// zoneListOf 将单值云可用区转为切片；空值返回 nil，使云区匹配 no-op
+func zoneListOf(zone string) []string {
+	if cmutil.IsEmpty(zone) {
+		return nil
+	}
+	return []string{zone}
+}
+
 // SpecCheckInput TODO
 type SpecCheckInput struct {
-	ResourceType string            `json:"resource_type"`
-	BkCloudId    int               `json:"bk_cloud_id"`
-	ForbizId     int               `json:"for_biz_id"`
-	LocationSpec meta.LocationSpec `json:"location_spec"`
-	Details      []SpecInfo        `json:"details" binding:"required,gt=0,dive"`
+	ResourceType  string            `json:"resource_type"`
+	BkCloudId     int               `json:"bk_cloud_id"`
+	BkCloudRegion string            `json:"bk_cloud_region"`
+	BkCloudZone   string            `json:"bk_cloud_zone"`
+	ForbizId      int               `json:"for_biz_id"`
+	LocationSpec  meta.LocationSpec `json:"location_spec"`
+	Details       []SpecInfo        `json:"details" binding:"required,gt=0,dive"`
 }
 
 // SpecInfo TODO
@@ -67,6 +78,8 @@ func (m MachineResourceHandler) SpecSum(r *gin.Context) {
 			IntentionBkBizId: input.ForbizId,
 			RsType:           model.NormalizeResourceType(input.ResourceType),
 			IdcCitys:         idcCitys,
+			BkCloudRegion:    input.BkCloudRegion,
+			BkCloudZoneList:  zoneListOf(input.BkCloudZone),
 			ObjectDetail: &apply.ObjectDetail{
 				GroupMark:    item.GroupMark,
 				DeviceClass:  item.DeviceClass,
@@ -88,6 +101,7 @@ func (m MachineResourceHandler) SpecSum(r *gin.Context) {
 		s.MatchStorage(db)
 		s.MatchSpec(db)
 		s.MatchLocationSpec(db)
+		s.MatchBkCloudLocationSpec(db)
 		s.MatchLabels(db)
 		s.MatchOsType(db)
 		if err := db.Scan(&count).Error; err != nil {

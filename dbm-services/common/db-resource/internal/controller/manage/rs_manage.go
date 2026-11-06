@@ -200,6 +200,8 @@ type UpdateRsMeta struct {
 	OsName        *string                  `json:"os_name,omitempty"`
 	CityMeta      CityMeta                 `json:"city_meta,omitempty"`
 	SubZoneMeta   SubZoneMeta              `json:"sub_zone_meta,omitempty"`
+	BkCloudRegion *string                  `json:"bk_cloud_region,omitempty"`
+	BkCloudZone   *string                  `json:"bk_cloud_zone,omitempty"`
 	StorageDevice map[string]bk.DiskDetail `json:"storage_device"`
 }
 
@@ -246,6 +248,12 @@ func (v UpdateRsMeta) getUpdateMap() (updateMap map[string]interface{}, err erro
 	if v.SubZoneMeta.SubZoneId != "" {
 		updateMap["sub_zone_id"] = v.SubZoneMeta.SubZoneId
 		updateMap["sub_zone"] = v.SubZoneMeta.SubZone
+	}
+	if v.BkCloudRegion != nil {
+		updateMap["bk_cloud_region"] = *v.BkCloudRegion
+	}
+	if v.BkCloudZone != nil {
+		updateMap["bk_cloud_zone"] = *v.BkCloudZone
 	}
 	if len(v.StorageDevice) > 0 {
 		storageJson, err = json.Marshal(v.StorageDevice)

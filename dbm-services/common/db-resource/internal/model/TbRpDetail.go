@@ -24,6 +24,7 @@ import (
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -398,6 +399,46 @@ func PreselectFromUnused(ids []int, status string) (int64, error) {
 		Where("bk_host_id in (?) and status = ?", ids, Unused).
 		Update("status", status)
 	return db.RowsAffected, db.Error
+}
+
+// PreselectFromUnusedWithIDs 与 PreselectFromUnused 同样的 CAS 语义，
+// 但额外返回本次真正从 Unused 更新成功的 bk_host_id，供失败回滚精确匹配，
+// 避免把其他请求预选成功的机器误回滚。
+func PreselectFromUnusedWithIDs(ids []int, status string) (succeeded []int, err error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	tx := DB.Self.Begin()
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 事务内先锁定本批中仍为 Unused 的行（FOR UPDATE 保证并发下只有本请求拿到）
+	var candidates []int
+	if err = tx.Table(TbRpDetailName()).
+		Select("bk_host_id").
+		Where("bk_host_id in (?) and status = ?", ids, Unused).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Scan(&candidates).Error; err != nil {
+		return nil, err
+	}
+	if len(candidates) == 0 {
+		return nil, tx.Commit().Error
+	}
+	if err = tx.Table(TbRpDetailName()).
+		Where("bk_host_id in (?) and status = ?", candidates, Unused).
+		Update("status", status).Error; err != nil {
+		return nil, err
+	}
+	if err = tx.Commit().Error; err != nil {
+		return nil, err
+	}
+	return candidates, nil
 }
 
 // UpdateTbRpDetailStatusAtSelling TODO
