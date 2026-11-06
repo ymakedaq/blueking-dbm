@@ -19,9 +19,6 @@ const (
 	DBMEnvironApi = "/apis/conf/system_settings/environ/"
 	// DBMSpecApi 查询规格接口
 	DBMSpecApi = "/apis/dbresource/spec/"
-
-	// DBMFaultHostsCheckApi 查询主机关联的故障单据
-	DBMFaultHostsCheckApi = "/apis/dbresource/resource/check_fault_hosts/"
 	// DBMDissolveHostsCheckApi 查询主机是否为待裁撤
 	DBMDissolveHostsCheckApi = "/apis/db_dirty/check_host_is_dissolved/"
 	// DBMCheckHostHasUworkApi 查询主机是否有未关闭 uwork 故障单

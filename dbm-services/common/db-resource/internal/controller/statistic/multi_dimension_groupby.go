@@ -24,9 +24,8 @@ import (
 
 // GroupByField 分组字段定义
 type GroupByField struct {
-	Name     string                        // 字段名称
-	KeyFunc  func(interface{}) string      // 提取分组键的函数
-	SortFunc func(interface{}) interface{} // 排序键提取函数，可选
+	Name    string                   // 字段名称
+	KeyFunc func(interface{}) string // 提取分组键的函数
 }
 
 // AggregationFunc 聚合函数类型
@@ -226,16 +225,6 @@ func (m *MultiDimensionGroupBy) AddGroupField(name string, keyFunc func(interfac
 	m.Fields = append(m.Fields, GroupByField{
 		Name:    name,
 		KeyFunc: keyFunc,
-	})
-	return m
-}
-
-// AddGroupFieldWithSort 添加带排序的分组字段
-func (m *MultiDimensionGroupBy) AddGroupFieldWithSort(name string, keyFunc func(interface{}) string, sortFunc func(interface{}) interface{}) *MultiDimensionGroupBy {
-	m.Fields = append(m.Fields, GroupByField{
-		Name:     name,
-		KeyFunc:  keyFunc,
-		SortFunc: sortFunc,
 	})
 	return m
 }

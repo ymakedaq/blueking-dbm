@@ -169,37 +169,6 @@ func createNice(cpu int, mem, sdd, hdd int) (rs int64) {
 	return
 }
 
-// AnalysisResource 待选取资源排序
-//
-//	@param ins
-//	@return map
-func AnalysisResource(ins []model.TbRpDetail, israndom bool) map[string][]InstanceObject {
-	result := make(map[string][]InstanceObject)
-	for _, v := range ins {
-		linkids := strings.Split(v.NetDeviceID, ",")
-		t := InstanceObject{
-			BkHostId:        v.BkHostID,
-			RackId:          v.RackID,
-			LinkNetdeviceId: linkids,
-			Nice:            createNice(int(v.CPUNum), v.DramCap, 0, 0),
-			InsDetail:       &v,
-		}
-		if israndom {
-			result[RANDOM] = append(result[RANDOM], t)
-		} else {
-			result[v.SubZone] = append(result[v.SubZone], t)
-		}
-	}
-
-	// 对个每个camp里面机器按照规则排序，便于后续picker的时候取最优的
-	for key := range result {
-		sort.Sort(Wrapper{result[key], func(p, q *InstanceObject) bool {
-			return q.Nice > p.Nice // Nice 递减排序
-		}})
-	}
-	return result
-}
-
 // NewPicker 初始化资源选择器
 //
 //	@param count
@@ -357,30 +326,6 @@ func (c *InstanceObject) GetLinkNetDeviceIdsInterface() []interface{} {
 		k = append(k, v)
 	}
 	return k
-}
-
-// Wrapper Wrapper
-type Wrapper struct {
-	Instances []InstanceObject
-	by        func(p, q *InstanceObject) bool
-}
-
-// SortBy sort by
-type SortBy func(p, q *InstanceObject) bool
-
-// Len 用于排序
-func (pw Wrapper) Len() int { // 重写 Len() 方法
-	return len(pw.Instances)
-}
-
-// Swap 用于排序
-func (pw Wrapper) Swap(i, j int) { // 重写 Swap() 方法
-	pw.Instances[i], pw.Instances[j] = pw.Instances[j], pw.Instances[i]
-}
-
-// Less 用于排序
-func (pw Wrapper) Less(i, j int) bool { // 重写 Less() 方法
-	return pw.by(&pw.Instances[i], &pw.Instances[j])
 }
 
 // InitToleranceConfig 初始化容忍度相关配置
@@ -768,51 +713,6 @@ func (c *PickerObject) SortRackByBalance(subZone string) []string {
 
 	logger.Info("均衡排序后的机架顺序 (园区%s): %v", subZone, result)
 	return result
-}
-
-// GetCurrentDistributionInfo 获取当前分配情况的统计信息
-func (c *PickerObject) GetCurrentDistributionInfo() map[string]interface{} {
-	info := make(map[string]interface{})
-
-	// 总体统计
-	info["total_requested"] = c.Count
-	info["total_allocated"] = len(c.SatisfiedHostIds)
-	totalExisting := 0
-	for _, count := range c.CurrentHostsBySubZone {
-		totalExisting += count
-	}
-	info["total_existing"] = totalExisting
-
-	// 园区分布统计
-	distribution := make(map[string]map[string]int)
-	allSubZones := make(map[string]bool)
-
-	// 收集所有园区
-	for subZone := range c.CurrentHostsBySubZone {
-		allSubZones[subZone] = true
-	}
-	for subZone := range c.PickDistribute {
-		allSubZones[subZone] = true
-	}
-
-	// 统计每个园区的详细信息
-	for subZone := range allSubZones {
-		distribution[subZone] = map[string]int{
-			"existing":  c.CurrentHostsBySubZone[subZone],
-			"allocated": c.PickDistribute[subZone],
-			"total":     c.GetSubZoneCurrentTotal(subZone),
-		}
-		if c.MaxPerSubZone > 0 {
-			distribution[subZone]["max_allowed"] = c.MaxPerSubZone
-			distribution[subZone]["remaining"] = c.MaxPerSubZone - c.GetSubZoneCurrentTotal(subZone)
-		}
-	}
-
-	info["distribution"] = distribution
-	info["tolerance"] = c.Tolerance
-	info["max_per_subzone"] = c.MaxPerSubZone
-
-	return info
 }
 
 // CalculateBalanceScore 计算当前分配的均衡得分

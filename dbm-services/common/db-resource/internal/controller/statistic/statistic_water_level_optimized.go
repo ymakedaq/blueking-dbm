@@ -54,21 +54,6 @@ type MachineBasicInfo struct {
 	StorageDevice json.RawMessage `gorm:"column:storage_device"`
 }
 
-// AggregatedMachineGroup 数据库层聚合的机器分组
-type AggregatedMachineGroup struct {
-	City         string `gorm:"column:city"`
-	SubZoneID    string `gorm:"column:sub_zone_id"`
-	OsName       string `gorm:"column:os_name"`
-	OsNameOrigin string `gorm:"column:os_name_origin"`
-	Count        int    `gorm:"column:count"`
-	// 以下字段用于规格匹配的代表性数据
-	MinCPU        int    `gorm:"column:min_cpu"`
-	MaxCPU        int    `gorm:"column:max_cpu"`
-	MinMem        int    `gorm:"column:min_mem"`
-	MaxMem        int    `gorm:"column:max_mem"`
-	DeviceClasses string `gorm:"column:device_classes"` // 逗号分隔的 device_class 列表
-}
-
 // WaterLevelStatisticOptimized 优化后的水位统计接口
 // 优化策略：
 // 1. 数据库层聚合减少数据传输量

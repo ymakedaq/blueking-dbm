@@ -42,11 +42,6 @@ func ListSameSvrOwnerPeers(current model.TbRpDetail, pool []model.TbRpDetail) []
 	return peers
 }
 
-// SameSvrOwnerCount 同母机台数（含本机）；空固资号为 0。
-func SameSvrOwnerCount(current model.TbRpDetail, pool []model.TbRpDetail) int {
-	return len(ListSameSvrOwnerPeers(current, pool))
-}
-
 // GroupBySvrOwnerAsset 按母机固资号分组（跳过空固资）。
 func GroupBySvrOwnerAsset(pool []model.TbRpDetail) map[string][]model.TbRpDetail {
 	m := make(map[string][]model.TbRpDetail)

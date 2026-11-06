@@ -41,7 +41,6 @@ const (
 
 	// 性能优化相关常量
 	DefaultQueryTimeout   = 30 * time.Second // 默认查询超时时间
-	MaxConcurrentQueries  = 10               // 最大并发查询数
 	QueryResultCacheSize  = 1000             // 查询结果缓存大小
 	QueryResultCacheTTL   = 5 * time.Minute  // 查询结果缓存TTL
 	MaxSubZoneResults     = 50               // 最大园区结果数
@@ -85,8 +84,7 @@ type ResourceTypeRegistry struct {
 
 // ValidationRule 验证规则
 type ValidationRule struct {
-	RequiredFields []string                          `json:"required_fields"`
-	Validators     map[string]func(interface{}) bool `json:"-"` // 自定义验证函数
+	RequiredFields []string `json:"required_fields"`
 }
 
 // TransformRule 转换规则
@@ -2747,56 +2745,6 @@ func (t *ResourceTools) AnalyzeAffinityIssues(args map[string]interface{}) (*Aff
 	return result, nil
 }
 
-// checkAffinityConstraint 检查亲和性约束
-func (t *ResourceTools) checkAffinityConstraint(affinityType string, requestCount, uniqueRacks, uniqueNetDevices int) AffinityConstraintCheck {
-	check := AffinityConstraintCheck{}
-
-	switch affinityType {
-	case "SAME_SUBZONE_CROSS_SWTICH":
-		// 同城同园区跨机架跨交换机：需要每台机器在不同机架且不同交换机上
-		check.RacksRequired = requestCount
-		check.RacksAvailable = uniqueRacks
-		check.RacksSatisfied = uniqueRacks >= requestCount
-		check.SwitchesRequired = requestCount
-		check.SwitchesAvailable = uniqueNetDevices
-		check.SwitchesSatisfied = uniqueNetDevices >= requestCount
-		check.OverallSatisfied = check.RacksSatisfied && check.SwitchesSatisfied
-
-	case "CROSS_RACK":
-		// 跨机架：需要每台机器在不同机架上
-		check.RacksRequired = requestCount
-		check.RacksAvailable = uniqueRacks
-		check.RacksSatisfied = uniqueRacks >= requestCount
-		check.SwitchesRequired = 0
-		check.SwitchesSatisfied = true
-		check.OverallSatisfied = check.RacksSatisfied
-
-	case "SAME_SUBZONE":
-		// 同城同园区：不要求跨机架跨交换机
-		check.RacksSatisfied = true
-		check.SwitchesSatisfied = true
-		check.OverallSatisfied = true
-
-	case "CROS_SUBZONE", "CROSS_SUBZONE_STRONG":
-		// 跨园区：不在此工具处理，需要结合多园区数据
-		check.RacksSatisfied = true
-		check.SwitchesSatisfied = true
-		check.OverallSatisfied = true
-
-	default:
-		// 其他类型，假设同时要求跨机架和跨交换机
-		check.RacksRequired = requestCount
-		check.RacksAvailable = uniqueRacks
-		check.RacksSatisfied = uniqueRacks >= requestCount
-		check.SwitchesRequired = requestCount
-		check.SwitchesAvailable = uniqueNetDevices
-		check.SwitchesSatisfied = uniqueNetDevices >= requestCount
-		check.OverallSatisfied = check.RacksSatisfied && check.SwitchesSatisfied
-	}
-
-	return check
-}
-
 // checkAffinityConstraintEx 检查亲和性约束（扩展版，支持容忍度和园区检查）
 func (t *ResourceTools) checkAffinityConstraintEx(affinityType string, requestCount int, tolerance float64,
 	uniqueSubZones, uniqueRacks, uniqueNetDevices int) AffinityConstraintCheck {
@@ -2930,53 +2878,6 @@ func (t *ResourceTools) generateAffinitySuggestionEx(affinityType string, reques
 		suggestions = append(suggestions, fmt.Sprintf(
 			"需要在该城市补充至少 %d 个新园区上的资源", needMore))
 	}
-
-	if !check.RacksSatisfied {
-		needMore := check.RacksRequired - check.RacksAvailable
-		suggestions = append(suggestions, fmt.Sprintf(
-			"需要在该园区补充至少 %d 个新机架上的资源", needMore))
-	}
-
-	if !check.SwitchesSatisfied {
-		needMore := check.SwitchesRequired - check.SwitchesAvailable
-		suggestions = append(suggestions, fmt.Sprintf(
-			"需要在该园区补充至少 %d 个新交换机上的资源", needMore))
-	}
-
-	if len(suggestions) == 0 {
-		return "资源分布满足亲和性要求"
-	}
-
-	return strings.Join(suggestions, "; ")
-}
-
-// generateAffinityIssueDetail 生成亲和性问题详情
-func (t *ResourceTools) generateAffinityIssueDetail(affinityType string, requestCount int, result *AffinityAnalysisResult) string {
-	check := result.ConstraintCheck
-	dist := result.ResourceDistribution
-
-	var details []string
-
-	if !check.RacksSatisfied {
-		details = append(details, fmt.Sprintf(
-			"需要 %d 个不同机架，当前仅有 %d 个机架。机架分布: %v",
-			check.RacksRequired, check.RacksAvailable, dist.ByRack))
-	}
-
-	if !check.SwitchesSatisfied {
-		details = append(details, fmt.Sprintf(
-			"需要 %d 个不同交换机，当前仅有 %d 个交换机。交换机分布: %v",
-			check.SwitchesRequired, check.SwitchesAvailable, dist.ByNetDevice))
-	}
-
-	return strings.Join(details, "; ")
-}
-
-// generateAffinitySuggestion 生成亲和性建议
-func (t *ResourceTools) generateAffinitySuggestion(affinityType string, requestCount int, result *AffinityAnalysisResult) string {
-	check := result.ConstraintCheck
-
-	var suggestions []string
 
 	if !check.RacksSatisfied {
 		needMore := check.RacksRequired - check.RacksAvailable
@@ -3527,12 +3428,6 @@ type QueryMetrics struct {
 	DatabaseQueries   int           `json:"database_queries"`
 	ResultCount       int           `json:"result_count"`
 	OptimizationsUsed []string      `json:"optimizations_used"`
-}
-
-// 全局查询优化器实例
-var globalQueryOptimizer = &QueryOptimizer{
-	queryCache:        make(map[string]*CachedQueryResult),
-	concurrentQueries: make(chan struct{}, MaxConcurrentQueries),
 }
 
 // ResourceTypeInferenceResult 资源类型推测结果
@@ -4327,58 +4222,6 @@ func (t *ResourceTools) optimizeQuery(query *gorm.DB, args map[string]interface{
 	return query, optimizations
 }
 
-// optimizedInferResourceType 带性能优化的资源类型推测
-func (t *ResourceTools) optimizedInferResourceType(args map[string]interface{}) (*ResourceTypeInferenceResult, error) {
-	startTime := time.Now()
-	metrics := &QueryMetrics{
-		DatabaseQueries:   0,
-		OptimizationsUsed: make([]string, 0),
-	}
-
-	// 生成查询哈希
-	queryHash := generateQueryHash(args)
-
-	// 尝试从缓存获取结果
-	if cachedResult, found := globalQueryOptimizer.getCachedResult(queryHash); found {
-		metrics.CacheHit = true
-		metrics.QueryDuration = time.Since(startTime)
-		cachedResult.Metrics = metrics
-		return cachedResult, nil
-	}
-
-	metrics.CacheHit = false
-
-	// 获取查询槽位（并发控制）
-	ctx, cancel := context.WithTimeout(context.Background(), DefaultQueryTimeout)
-	defer cancel()
-
-	if err := globalQueryOptimizer.acquireQuerySlot(ctx); err != nil {
-		return &ResourceTypeInferenceResult{
-			Error:         "query slot acquisition timeout",
-			FailureReason: "system overload",
-			Verified:      false,
-			Confidence:    "low",
-			Metrics:       metrics,
-		}, err
-	}
-	defer globalQueryOptimizer.releaseQuerySlot()
-
-	// 执行实际的推测逻辑
-	result, err := t.inferResourceType(args)
-	if result != nil {
-		metrics.QueryDuration = time.Since(startTime)
-		metrics.ResultCount = result.AlternativeCount
-		result.Metrics = metrics
-
-		// 缓存结果（仅缓存成功的结果）
-		if err == nil && result.Error == "" {
-			globalQueryOptimizer.setCachedResult(queryHash, result)
-		}
-	}
-
-	return result, err
-}
-
 // ========== 标准化结果格式相关方法 ==========
 
 // toStandardAnalysisResult 将推测结果转换为标准化分析结果格式
@@ -4598,35 +4441,6 @@ func generateRecommendations(result *ResourceTypeInferenceResult) []Recommendati
 	return recommendations
 }
 
-// formatForLLMAnalysis 格式化结果供LLM分析使用
-func (result *ResourceTypeInferenceResult) formatForLLMAnalysis() map[string]interface{} {
-	formatted := map[string]interface{}{
-		"analysis_type": "resource_type_inference",
-		"input": map[string]interface{}{
-			"current_resource_type": result.CurrentResourceType,
-			"alternative_checked":   result.AlternativeResourceType,
-		},
-		"output": map[string]interface{}{
-			"alternative_available": result.AlternativeAvailable,
-			"alternative_count":     result.AlternativeCount,
-			"confidence":            result.Confidence,
-			"verified":              result.Verified,
-			"suggestion":            result.Suggestion,
-		},
-		"context": map[string]interface{}{
-			"distribution": result.AlternativeDistribution,
-			"metrics":      result.Metrics,
-		},
-	}
-
-	if result.Error != "" {
-		formatted["error"] = result.Error
-		formatted["failure_reason"] = result.FailureReason
-	}
-
-	return formatted
-}
-
 // ========== 可扩展性支持相关方法 ==========
 
 // getDefaultMappingConfig 获取默认映射配置
@@ -4713,36 +4527,6 @@ func (registry *ResourceTypeRegistry) GetAlternativeResourceTypes(currentType st
 	}
 
 	return nil, false
-}
-
-// ValidateResourceTypeParameters 验证资源类型参数
-func (registry *ResourceTypeRegistry) ValidateResourceTypeParameters(resourceType string, args map[string]interface{}) error {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
-
-	rule, exists := registry.validationRules[resourceType]
-	if !exists {
-		// 使用默认验证
-		return validateResourceTypeInferenceParams(args)
-	}
-
-	// 检查必需字段
-	for _, field := range rule.RequiredFields {
-		if _, ok := args[field]; !ok {
-			return fmt.Errorf("required field '%s' is missing for resource type '%s'", field, resourceType)
-		}
-	}
-
-	// 执行自定义验证
-	for field, validator := range rule.Validators {
-		if value, ok := args[field]; ok {
-			if !validator(value) {
-				return fmt.Errorf("validation failed for field '%s' in resource type '%s'", field, resourceType)
-			}
-		}
-	}
-
-	return nil
 }
 
 // TransformParameters 转换参数（用于不同资源类型间的参数适配）
@@ -4851,19 +4635,6 @@ func (registry *ResourceTypeRegistry) validateMappingConfig(config *ResourceType
 	}
 
 	return nil
-}
-
-// GetSupportedResourceTypes 获取所有支持的资源类型
-func (registry *ResourceTypeRegistry) GetSupportedResourceTypes() []string {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
-
-	types := make([]string, 0, len(supportedResourceTypes))
-	for resourceType := range supportedResourceTypes {
-		types = append(types, resourceType)
-	}
-	sort.Strings(types)
-	return types
 }
 
 // extensibleInferResourceType 可扩展的资源类型推测（支持多个替代类型）。

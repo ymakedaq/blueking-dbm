@@ -45,7 +45,7 @@ func host(t *testing.T, id int, ip, asset string, biz int, rsType string, labels
 func TestSameSvrOwner_EmptyAsset_Zero(t *testing.T) {
 	cur := host(t, 1, "127.0.0.1", "", 100, model.RESOURCE_TYPE_PUBLIC, nil)
 	pool := []model.TbRpDetail{cur, host(t, 2, "127.0.0.2", "M1", 100, model.RESOURCE_TYPE_PUBLIC, nil)}
-	if n := SameSvrOwnerCount(cur, pool); n != 0 {
+	if n := len(ListSameSvrOwnerPeers(cur, pool)); n != 0 {
 		t.Fatalf("want 0, got %d", n)
 	}
 }
@@ -90,7 +90,7 @@ func TestSameSvrOwner_RsType_DedicatedAllowsPublic(t *testing.T) {
 	pub := host(t, 2, "127.0.0.2", "M1", 100, model.RESOURCE_TYPE_PUBLIC, nil)
 	redis := host(t, 3, "127.0.0.3", "M1", 100, "redis", nil)
 	pool := []model.TbRpDetail{a, pub, redis}
-	if n := SameSvrOwnerCount(a, pool); n != 2 {
+	if n := len(ListSameSvrOwnerPeers(a, pool)); n != 2 {
 		t.Fatalf("want 2 (self+public), got %d", n)
 	}
 }
@@ -101,14 +101,14 @@ func TestSameSvrOwner_RsType_PublicUnlimited(t *testing.T) {
 	redis := host(t, 3, "127.0.0.3", "M1", 200, "redis", nil)
 	pool := []model.TbRpDetail{a, mysql, redis}
 	// 当前公共池无标签：同伴无标签即可，业务不限；rs_type 不限
-	if n := SameSvrOwnerCount(a, pool); n != 3 {
+	if n := len(ListSameSvrOwnerPeers(a, pool)); n != 3 {
 		t.Fatalf("want 3, got %d", n)
 	}
 }
 
 func TestSameSvrOwner_OnlySelf(t *testing.T) {
 	a := host(t, 1, "127.0.0.1", "M1", 100, "mysql", nil)
-	if n := SameSvrOwnerCount(a, []model.TbRpDetail{a}); n != 1 {
+	if n := len(ListSameSvrOwnerPeers(a, []model.TbRpDetail{a})); n != 1 {
 		t.Fatalf("want 1, got %d", n)
 	}
 }

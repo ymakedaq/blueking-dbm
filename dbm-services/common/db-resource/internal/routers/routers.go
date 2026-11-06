@@ -17,6 +17,7 @@ import (
 	"dbm-services/common/db-resource/internal/controller"
 	"dbm-services/common/db-resource/internal/controller/analyze"
 	"dbm-services/common/db-resource/internal/controller/apply"
+	"dbm-services/common/db-resource/internal/controller/applyv2"
 	"dbm-services/common/db-resource/internal/controller/manage"
 	"dbm-services/common/db-resource/internal/controller/statistic"
 
@@ -27,6 +28,9 @@ import (
 func RegisterRoutes(engine *gin.Engine) {
 	apply := apply.ApplyHandler{}
 	apply.RegisterRouter(engine)
+	// v2 apply handler
+	applyV2 := applyv2.ApplyHandlerV2{}
+	applyV2.RegisterRouter(engine)
 	// machine resource management
 	manageHandler := manage.MachineResourceHandler{}
 	manageHandler.RegisterRouter(engine)

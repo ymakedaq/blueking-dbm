@@ -28,8 +28,8 @@ func TestSameSvrOwnerIPs_MatchesCount(t *testing.T) {
 		t.Fatalf("want 2 ips, got %v", ips)
 	}
 	// 无空 IP 时，台数与 ips 长度一致
-	if SameSvrOwnerCount(a, pool) != len(ips) {
-		t.Fatalf("count mismatch: peers=%d ips=%d", SameSvrOwnerCount(a, pool), len(ips))
+	if len(ListSameSvrOwnerPeers(a, pool)) != len(ips) {
+		t.Fatalf("count mismatch: peers=%d ips=%d", len(ListSameSvrOwnerPeers(a, pool)), len(ips))
 	}
 }
 

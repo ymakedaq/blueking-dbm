@@ -167,16 +167,6 @@ func extractFirstJSONObject(content string) string {
 	return ""
 }
 
-// GetAllDiskIds TODO
-func GetAllDiskIds(c []DiskInfo) (diskIds []string) {
-	for _, v := range c {
-		if cmutil.IsNotEmpty(v.DiskId) {
-			diskIds = append(diskIds, v.DiskId)
-		}
-	}
-	return
-}
-
 // MarshalDisk TODO
 func MarshalDisk(c []DiskInfo) (result string, err error) {
 	var b []byte

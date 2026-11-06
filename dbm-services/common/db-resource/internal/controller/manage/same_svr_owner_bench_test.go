@@ -86,7 +86,7 @@ func BenchmarkSameSvrOwner_Page20_Naive_50k(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for j := range page {
-			_ = SameSvrOwnerCount(page[j], pool)
+			_ = len(ListSameSvrOwnerPeers(page[j], pool))
 		}
 	}
 }
@@ -136,7 +136,7 @@ func TestSameSvrOwnerBenchSanity_50k(t *testing.T) {
 	t.Logf("pool=%d mothers~=%d page=100 avg_count=%.2f empty_asset_in_page=%d",
 		len(pool), len(byAsset), float64(sum)/float64(len(page)), empty)
 	for i := 0; i < 10; i++ {
-		a := SameSvrOwnerCount(page[i], pool)
+		a := len(ListSameSvrOwnerPeers(page[i], pool))
 		g := len(ListSameSvrOwnerPeersGrouped(page[i], byAsset))
 		if a != g {
 			t.Fatalf("naive=%d grouped=%d mismatch at i=%d", a, g, i)

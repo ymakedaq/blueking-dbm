@@ -40,27 +40,29 @@ const (
 // MachineResourceGetterInputParam TODO
 type MachineResourceGetterInputParam struct {
 	// 专用业务Ids
-	ForBiz        *int               `json:"for_biz"`       // 后续删除
-	RsType        *string            `json:"resource_type"` // 后续删除
-	ForBizs       []int              `json:"for_bizs"`
-	RsTypes       []string           `json:"resource_types"`
-	City          []string           `json:"city"`
-	SubZoneIds    []string           `json:"subzone_ids"`
-	DeviceClass   []string           `json:"device_class"`
-	Labels        []string           `json:"labels"`
-	Hosts         []string           `json:"hosts"`
-	BkCloudIds    []int              `json:"bk_cloud_ids"`
-	MountPoint    string             `json:"mount_point"`
-	Cpu           meta.MeasureRange  `json:"cpu"`
-	Mem           meta.MeasureRange  `json:"mem"`
-	Disk          *meta.MeasureRange `json:"disk"`
-	DiskType      string             `json:"disk_type"`
-	OsType        string             `json:"os_type"`
-	OsNames       []string           `json:"os_names"`
-	ExcludeOsName bool               `json:"exclude_os_name"`
-	StorageSpecs  []meta.DiskSpec    `json:"storage_spec"`
-	CreateTime    string             `json:"create_time"`
-	EmptyLabels   bool               `json:"empty_labels"`
+	ForBiz          *int               `json:"for_biz"`       // 后续删除
+	RsType          *string            `json:"resource_type"` // 后续删除
+	ForBizs         []int              `json:"for_bizs"`
+	RsTypes         []string           `json:"resource_types"`
+	City            []string           `json:"city"`
+	SubZoneIds      []string           `json:"subzone_ids"`
+	BkCloudRegion   string             `json:"bk_cloud_region"`
+	BkCloudZoneList []string           `json:"bk_cloud_zone_list"`
+	DeviceClass     []string           `json:"device_class"`
+	Labels          []string           `json:"labels"`
+	Hosts           []string           `json:"hosts"`
+	BkCloudIds      []int              `json:"bk_cloud_ids"`
+	MountPoint      string             `json:"mount_point"`
+	Cpu             meta.MeasureRange  `json:"cpu"`
+	Mem             meta.MeasureRange  `json:"mem"`
+	Disk            *meta.MeasureRange `json:"disk"`
+	DiskType        string             `json:"disk_type"`
+	OsType          string             `json:"os_type"`
+	OsNames         []string           `json:"os_names"`
+	ExcludeOsName   bool               `json:"exclude_os_name"`
+	StorageSpecs    []meta.DiskSpec    `json:"storage_spec"`
+	CreateTime      string             `json:"create_time"`
+	EmptyLabels     bool               `json:"empty_labels"`
 	// 资源状态过滤，默认 Unused；可传多个如 Unused/FaultHazard/Dissolved
 	Status []string `json:"status"`
 	// true,false,""
@@ -354,6 +356,12 @@ func (c *MachineResourceGetterInputParam) queryBs(db *gorm.DB) (err error) {
 	}
 	if len(c.SubZoneIds) > 0 {
 		db.Where(" sub_zone_id in (?) ", c.SubZoneIds)
+	}
+	if cmutil.IsNotEmpty(c.BkCloudRegion) {
+		db.Where("bk_cloud_region = ?", c.BkCloudRegion)
+	}
+	if len(c.BkCloudZoneList) > 0 {
+		db.Where("bk_cloud_zone in (?)", c.BkCloudZoneList)
 	}
 	if len(c.Labels) > 0 {
 		db.Where(model.JSONQuery("labels").JointOrContains(c.Labels))
