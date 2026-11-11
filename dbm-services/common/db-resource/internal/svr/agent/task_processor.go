@@ -52,7 +52,7 @@ func markAnalysisFailed(billID, errorMsg, duration string) {
 		update["duration"] = duration
 	}
 	if err := model.DB.Self.Model(&model.TbRpAnalysisResult{}).
-		Where("bill_id = ?", billID).
+		Where("bill_id = ? AND status = ?", billID, model.AnalysisStatusRunning).
 		Updates(update).Error; err != nil {
 		logger.Error("Failed to mark analysis failed for bill %s: %v", billID, err)
 	}
@@ -82,7 +82,12 @@ func ProcessAnalysisTask(item task.AnalysisTaskItem) {
 	err := model.DB.Self.Where("bill_id = ?", billID).First(&existingRecord).Error
 
 	if err == nil {
-		// 单据ID已存在，覆盖现有记录
+		// 幂等短路：申请请求内已同步落库确定性报告时，不再重跑、不覆盖结果
+		if existingRecord.Status == model.AnalysisStatusCompleted && len(existingRecord.AnalysisResult) > 0 {
+			logger.Info("Analysis already completed for bill %s, skip re-running", billID)
+			return
+		}
+		// 仅未完成/失败的记录才重置为 pending
 		updateData := map[string]interface{}{
 			"apply_params": applyParamsJSON,
 			"status":       model.AnalysisStatusPending,
@@ -168,7 +173,7 @@ func ProcessAnalysisTask(item task.AnalysisTaskItem) {
 
 	// 成功完成
 	if err := model.DB.Self.Model(&model.TbRpAnalysisResult{}).
-		Where("bill_id = ?", billID).
+		Where("bill_id = ? AND status = ?", billID, model.AnalysisStatusRunning).
 		Updates(map[string]interface{}{
 			"status":          model.AnalysisStatusCompleted,
 			"analysis_result": resultJSON,

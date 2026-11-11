@@ -53,6 +53,7 @@ type AffinitySnapshot struct {
 }
 
 // ApplyFailureEvidence 资源申请失败现场。作为观测数据交给分析智能体，不含根因结论。
+// Verdict 是申请时刻算出的确定性结论，与观测数据分开存放，避免污染漏斗语义。
 type ApplyFailureEvidence struct {
 	Stage          string            `json:"stage"`
 	GroupMark      string            `json:"group_mark"`
@@ -65,6 +66,7 @@ type ApplyFailureEvidence struct {
 	ProcessLogs    []string          `json:"process_logs,omitempty"`
 	Distribution   *AffinitySnapshot `json:"distribution,omitempty"`
 	Note           string            `json:"note,omitempty"`
+	Verdict        *RootCauseVerdict `json:"verdict,omitempty"`
 }
 
 // ResourceInsufficientError 携带失败现场的资源不足错误
@@ -96,16 +98,24 @@ func NewResourceInsufficientError(evidence ApplyFailureEvidence, err error, mess
 	}
 }
 
+// newInsufficientErrorWithVerdict 所有失败出口的统一入口：先补齐确定性根因，再返回错误。
+// param / o 允许为 nil（CAS 层级没有 SearchContext），此时由现场数据降级判定。
+func newInsufficientErrorWithVerdict(evidence ApplyFailureEvidence, param *RequestInputParam,
+	o *SearchContext, err error, message string) error {
+	AttachVerdict(&evidence, param, o)
+	return NewResourceInsufficientError(evidence, err, message)
+}
+
 // newPreselectFailedError 机器已挑出但预选状态更新失败，记录 CAS 层现场
 func newPreselectFailedError(detail *ObjectDetail, picker *PickerObject, updateErr error) error {
-	return NewResourceInsufficientError(ApplyFailureEvidence{
+	return newInsufficientErrorWithVerdict(ApplyFailureEvidence{
 		Stage:        FailStageCAS,
 		GroupMark:    detail.GroupMark,
 		Affinity:     detail.Affinity,
 		RequestCount: detail.Count,
 		PickedCount:  len(picker.SatisfiedHostIds),
 		Note:         "已挑选到机器,但预选状态更新失败,通常是并发申请抢占同一批资源",
-	}, updateErr, fmt.Sprintf("update %s Picker Out Satisfied Instance Status to Preselected Failed:%v",
+	}, nil, nil, updateErr, fmt.Sprintf("update %s Picker Out Satisfied Instance Status to Preselected Failed:%v",
 		detail.GroupMark, updateErr.Error()))
 }
 

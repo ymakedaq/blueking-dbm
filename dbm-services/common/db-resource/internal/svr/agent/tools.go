@@ -26,6 +26,7 @@ import (
 
 	"dbm-services/common/db-resource/internal/model"
 	"dbm-services/common/db-resource/internal/svr/bk"
+	"dbm-services/common/go-pubpkg/logger"
 )
 
 // ResourceTools 资源查询工具集
@@ -3209,36 +3210,22 @@ func (t *ResourceTools) ExecuteCustomQuery(args map[string]interface{}) (*Custom
 		result.Warning = `storage_device 的 JSON_EXTRACT 路径已纠正。挂载点含斜杠必须写成 $."/data".size，不能写成 /data/size 或 $./data.size`
 	}
 
-	// 安全检查：只允许 SELECT 查询
-	sqlUpper := strings.TrimSpace(strings.ToUpper(sql))
-	if !strings.HasPrefix(sqlUpper, "SELECT") {
-		result.Error = "只允许执行 SELECT 查询"
-		return result, fmt.Errorf("只允许执行 SELECT 查询")
+	// 结构化只读白名单：解析 SQL 引用的所有表，任一不在白名单即拒绝。
+	// 不再使用「SQL 文本包含表名字符串」这种可被注释/字面量绕过的检查。
+	validatedSQL, verr := validateReadonlySQL(sql)
+	if verr != nil {
+		result.Error = verr.Error()
+		return result, verr
 	}
+	sql = validatedSQL
+	result.SQL = sql
+	logger.Info("[readonly-sql] LLM query: %s", sql)
 
-	// 安全检查：必须包含 tb_rp_detail 表
-	if !strings.Contains(strings.ToUpper(sql), strings.ToUpper(model.TbRpDetailName())) {
-		result.Error = fmt.Sprintf("只能查询 %s 表", model.TbRpDetailName())
-		return result, fmt.Errorf("只能查询 %s 表", model.TbRpDetailName())
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), readonlyQueryTimeout)
+	defer cancel()
 
-	// 安全检查：禁止危险操作
-	dangerousKeywords := []string{"DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "TRUNCATE", "EXEC", "EXECUTE"}
-	for _, keyword := range dangerousKeywords {
-		if strings.Contains(sqlUpper, keyword) {
-			result.Error = fmt.Sprintf("禁止使用 %s 操作", keyword)
-			return result, fmt.Errorf("禁止使用 %s 操作", keyword)
-		}
-	}
-
-	// 限制结果数量：如果 SQL 中没有 LIMIT，自动添加 LIMIT 100
-	if !strings.Contains(sqlUpper, "LIMIT") {
-		sql = sql + " LIMIT 100"
-		result.SQL = sql
-	}
-
-	// 执行查询
-	rows, err := t.db.Raw(sql).Rows()
+	// 带超时与取消地执行查询
+	rows, err := t.db.WithContext(ctx).Raw(sql).Rows()
 	if err != nil {
 		result.Error = err.Error()
 		return result, fmt.Errorf("SQL 执行失败: %v", err)
@@ -3256,6 +3243,10 @@ func (t *ResourceTools) ExecuteCustomQuery(args map[string]interface{}) (*Custom
 	// 读取数据
 	var allRows []interface{}
 	for rows.Next() {
+		// 即使 SQL 自带一个很大的 LIMIT，也限制返回给 LLM 的行数
+		if len(allRows) >= maxReadonlyRows {
+			break
+		}
 		// 创建值的切片
 		values := make([]interface{}, len(columns))
 		valuePtrs := make([]interface{}, len(columns))
@@ -3276,7 +3267,7 @@ func (t *ResourceTools) ExecuteCustomQuery(args map[string]interface{}) (*Custom
 			if b, ok := val.([]byte); ok {
 				val = string(b)
 			}
-			rowMap[col] = val
+			rowMap[col] = sanitizeReadonlyValue(val)
 		}
 		allRows = append(allRows, rowMap)
 	}

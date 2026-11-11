@@ -177,6 +177,12 @@ func (a *ResourceAnalyzer) Analyze(ctx context.Context, applyParams *apply.Reque
 // evidence 是匹配流程留下的观测数据，不改变 system prompt 与工具集，根因仍由模型判断
 func (a *ResourceAnalyzer) AnalyzeWithScene(ctx context.Context, applyParams *apply.RequestInputParam,
 	evidence *apply.ApplyFailureEvidence) (*AnalysisResult, error) {
+	// 确定性结论直接返回：不调用 LLM，也不依赖 LLM 是否启用。
+	// 这样结论不会受模型状态、超时、工具轮次影响。
+	if evidence != nil && evidence.Verdict != nil &&
+		evidence.Verdict.Confidence == apply.VerdictCertain {
+		return BuildAnalysisResultFromVerdict(evidence), nil
+	}
 	if !a.IsEnabled() {
 		return nil, fmt.Errorf("LLM analyzer is not enabled")
 	}
@@ -186,6 +192,10 @@ func (a *ResourceAnalyzer) AnalyzeWithScene(ctx context.Context, applyParams *ap
 	// 构建消息
 	systemPrompt := GetSystemPrompt()
 	userMessage := BuildUserMessageWithScene(applyParams, evidence)
+	// 证据不足时保留探索链路，但已确定的现场事实不得被模型推翻
+	if evidence != nil && evidence.Verdict != nil {
+		userMessage += verdictAsKnownFacts(evidence.Verdict)
+	}
 
 	// 执行 Agent
 	execResult, err := a.executor.Execute(ctx, systemPrompt, userMessage)

@@ -21,6 +21,7 @@ import (
 	"dbm-services/common/db-resource/internal/lock"
 	"dbm-services/common/db-resource/internal/middleware"
 	"dbm-services/common/db-resource/internal/model"
+	"dbm-services/common/db-resource/internal/svr/agent"
 	"dbm-services/common/db-resource/internal/svr/apply"
 	"dbm-services/common/db-resource/internal/svr/task"
 	"dbm-services/common/go-pubpkg/cmutil"
@@ -149,6 +150,23 @@ func newLocker(key string, requestId string) *lock.SpinLock {
 	return lock.NewSpinLock(redisLock, 60, 350*time.Millisecond)
 }
 
+// persistFailureEvidence 在申请请求内同步落库确定性结论，并返回序列化后的失败现场。
+// 不依赖异步 channel 与 LLM：channel 满、LLM 未启用或分析超时都不影响真因可见。
+func persistFailureEvidence(billID string, paramsJSON json.RawMessage, err error) json.RawMessage {
+	var insufficient *apply.ResourceInsufficientError
+	if !errors.As(err, &insufficient) {
+		return nil
+	}
+	evidenceJSON, marshalErr := json.Marshal(insufficient.Evidence)
+	if marshalErr != nil {
+		logger.Warn("marshal apply failure evidence failed for bill %s: %v", billID, marshalErr)
+	}
+	if pErr := agent.PersistVerdictReport(billID, paramsJSON, &insufficient.Evidence); pErr != nil {
+		logger.Warn("persist verdict report failed for bill %s: %v", billID, pErr)
+	}
+	return evidenceJSON
+}
+
 // ApplyBase apply resource base func
 func (c *ApplyHandler) ApplyBase(r *gin.Context, mode string) {
 	logger.Info("start apply resource ... ")
@@ -188,16 +206,7 @@ func (c *ApplyHandler) ApplyBase(r *gin.Context, mode string) {
 		// 发送异步分析任务（非阻塞）
 		if paramsJSON, marshalErr := json.Marshal(param); marshalErr == nil {
 			// 带上申请失败现场,让分析智能体不必重新侦查
-			var evidenceJSON json.RawMessage
-			var insufficient *apply.ResourceInsufficientError
-			if errors.As(err, &insufficient) {
-				if b, evErr := json.Marshal(insufficient.Evidence); evErr == nil {
-					evidenceJSON = b
-				} else {
-					logger.Warn("marshal apply failure evidence failed for bill %s: %v",
-						param.ActionInfo.BillId, evErr)
-				}
-			}
+			evidenceJSON := persistFailureEvidence(param.ActionInfo.BillId, paramsJSON, err)
 			select {
 			case task.AnalysisTaskChan <- task.AnalysisTaskItem{
 				BillID:      param.ActionInfo.BillId,

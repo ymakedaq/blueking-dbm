@@ -41,6 +41,8 @@ type SearchContext struct {
 	IdcCitys          []string
 	SpecialSubZoneIds []string
 	SpecialHostIds    []int
+	// Param 本批申请入参，用于失败时判定请求约束自洽性；可为 nil
+	Param *RequestInputParam
 }
 
 // applyGroupsInSameLocation apply groups in same location
@@ -84,12 +86,12 @@ func applyGroupsInSameLocation(param RequestInputParam) (pickers []*PickerObject
 	if len(subzoneIds) == 0 {
 		msg := "没有符合条件的资源"
 		// 未进入 PickCheck,没有逐步筛选的漏斗数据
-		return pickers, NewResourceInsufficientError(ApplyFailureEvidence{
+		return pickers, newInsufficientErrorWithVerdict(ApplyFailureEvidence{
 			Stage:        FailStagePickCheck,
 			RequestCount: v.Count,
 			Affinity:     v.Affinity,
 			Note:         "多分组要求落在同一园区,合并各分组的园区优先级后候选园区为空,未执行按条件逐步筛选",
-		}, errno.ErrResourceinsufficient.Add(msg), msg)
+		}, &param, nil, errno.ErrResourceinsufficient.Add(msg), msg)
 	}
 	for _, subzoneId := range subzoneIds {
 		pickers = []*PickerObject{}
@@ -101,6 +103,7 @@ func applyGroupsInSameLocation(param RequestInputParam) (pickers []*PickerObject
 				IdcCitys:          idcCitys,
 				SpecialHostIds:    v.Hosts.GetBkHostIds(),
 				SpecialSubZoneIds: []string{subzoneId},
+				Param:             &param,
 			}
 			if err = s.PickCheck(); err != nil {
 				logger.Error("挑选资源失败:%v", err)
@@ -281,6 +284,7 @@ func cycleApplySequential(param RequestInputParam) (pickers []*PickerObject, err
 			ObjectDetail:     &v,
 			IdcCitys:         idcCites,
 			SpecialHostIds:   v.Hosts.GetBkHostIds(),
+			Param:            &param,
 		}
 		if err = s.PickCheck(); err != nil {
 			return pickers, err
@@ -394,14 +398,14 @@ func (o *SearchContext) PickCheck() (err error) {
 			msg += "\n\n" + detail
 		}
 		logger.Error("%s", msg)
-		return NewResourceInsufficientError(ApplyFailureEvidence{
+		return newInsufficientErrorWithVerdict(ApplyFailureEvidence{
 			Stage:        FailStagePickCheck,
 			GroupMark:    o.GroupMark,
 			Affinity:     o.Affinity,
 			RequestCount: o.Count,
 			Funnel:       funnel,
 			Note:         funnelStorageNote,
-		}, nil, msg)
+		}, o.Param, o, nil, msg)
 	}
 	return nil
 }
@@ -452,14 +456,14 @@ func (o *SearchContext) PickCheckSpecialBkhostIds() (err error) {
 		}
 		msg := fmt.Sprintf("指定ip申请资源,部分资源不存在:%v", emptyIps)
 		// 指定主机不经过 pickBase 的逐步过滤,没有漏斗可采集
-		return NewResourceInsufficientError(ApplyFailureEvidence{
+		return newInsufficientErrorWithVerdict(ApplyFailureEvidence{
 			Stage:        FailStagePickCheck,
 			GroupMark:    o.GroupMark,
 			Affinity:     o.Affinity,
 			RequestCount: o.Count,
 			MissingIps:   emptyIps,
 			Note:         "指定 bk_host_id 申请,未经过按条件逐步筛选,无漏斗数据",
-		}, nil, msg)
+		}, o.Param, o, nil, msg)
 	}
 	return nil
 }
@@ -510,7 +514,7 @@ func (o *SearchContext) PickInstance() (picker *PickerObject, err error) {
 		items, err = o.filterEmptyMountPointStorage(items, diskSpecs)
 		if err != nil {
 			logger.Error("filter empty mount point storage failed %s", err.Error())
-			return picker, NewResourceInsufficientError(ApplyFailureEvidence{
+			return picker, newInsufficientErrorWithVerdict(ApplyFailureEvidence{
 				Stage:          FailStageEmptyMountDisk,
 				GroupMark:      o.GroupMark,
 				Affinity:       o.Affinity,
@@ -518,7 +522,7 @@ func (o *SearchContext) PickInstance() (picker *PickerObject, err error) {
 				CandidateCount: beforeFilter,
 				PickedCount:    len(items),
 				Note:           "SQL 阶段候选台数为 candidate_count,按未占用挂载点匹配磁盘后剩余 picked_count",
-			}, err, err.Error())
+			}, o.Param, o, err, err.Error())
 		}
 	}
 
@@ -531,7 +535,7 @@ func (o *SearchContext) PickInstance() (picker *PickerObject, err error) {
 	}
 
 	msg := fmt.Sprintf("Picker for %s, 所有资源无法满足 %s的参数需求", o.GroupMark, o.GetMessage())
-	return nil, NewResourceInsufficientError(ApplyFailureEvidence{
+	return nil, newInsufficientErrorWithVerdict(ApplyFailureEvidence{
 		Stage:          FailStageAffinity,
 		GroupMark:      o.GroupMark,
 		Affinity:       o.Affinity,
@@ -541,7 +545,7 @@ func (o *SearchContext) PickInstance() (picker *PickerObject, err error) {
 		ProcessLogs:    picker.ProcessLogs,
 		Distribution:   BuildAffinitySnapshot(o.Affinity, o.Count, items),
 		Note:           "process_logs 为分配过程日志,不是结论",
-	}, errno.ErrResourceinsufficient.Add(msg), msg)
+	}, o.Param, o, errno.ErrResourceinsufficient.Add(msg), msg)
 }
 
 // PickInstanceBase pick instance base
