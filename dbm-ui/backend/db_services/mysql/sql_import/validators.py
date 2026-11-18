@@ -9,7 +9,6 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 """
 import re
-import unicodedata
 
 from django.utils.translation import gettext as _
 from rest_framework import serializers
@@ -52,25 +51,6 @@ def validate_sql_file_name(file_name: str, suffix: str = None) -> str:
         raise serializers.ValidationError(
             _("SQL 文件名[{}]超长，最多允许{}个字符").format(_display(name), MAX_UPLOAD_SQL_FILE_NAME_LENGTH)
         )
-
-    if "\\" in name:
-        raise serializers.ValidationError(_("SQL 文件名[{}]不允许包含路径分隔符").format(_display(name)))
-
-    if ".." in name:
-        raise serializers.ValidationError(_("SQL 文件名[{}]不允许包含 '..'").format(_display(name)))
-
-    if name.startswith("."):
-        raise serializers.ValidationError(_("SQL 文件名[{}]不允许以 '.' 开头").format(_display(name)))
-
-    if any(char.isspace() or unicodedata.category(char) == "Cc" for char in name):
-        raise serializers.ValidationError(_("SQL 文件名[{}]不允许包含空白或控制字符").format(_display(name)))
-
-    if not SQL_FILE_NAME_PATTERN.fullmatch(name):
-        raise serializers.ValidationError(_("SQL 文件名[{}]包含非法字符，仅允许字母、数字、中文、下划线、连字符和点").format(_display(name)))
-
-    if suffix and not name.lower().endswith(suffix):
-        raise serializers.ValidationError(_("SQL 文件名[{}]必须以{}结尾").format(_display(name), suffix))
-
     return name
 
 
