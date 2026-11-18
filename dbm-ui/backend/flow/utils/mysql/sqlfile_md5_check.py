@@ -50,6 +50,18 @@ def decide_md5_check(sql_files_md5, ticket_type) -> Union[Skip, Proceed]:
     return Proceed(sql_files_md5=sql_files_md5)
 
 
+def actuator_sql_files_md5(ticket_data) -> Optional[dict]:
+    """Return the map to put on actuator extend, or None when the key must be omitted."""
+    if not isinstance(ticket_data, dict):
+        return None
+    ticket_type = ticket_data.get("ticket_type")
+    ticket_type = getattr(ticket_type, "value", ticket_type)
+    decision = decide_md5_check(ticket_data.get("sql_files_md5"), ticket_type)
+    if isinstance(decision, Proceed):
+        return decision.sql_files_md5
+    return None
+
+
 def parse_safe_filename(raw) -> Optional[str]:
     if not isinstance(raw, str) or ".." in raw:
         return None

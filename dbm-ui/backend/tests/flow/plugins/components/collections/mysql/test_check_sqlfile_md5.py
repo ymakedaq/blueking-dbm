@@ -4,12 +4,15 @@ from unittest.mock import MagicMock, patch
 
 from backend.flow.consts import SUCCESS_LIST
 from backend.flow.plugins.components.collections.mysql.check_sqlfile_md5 import CheckSqlFileMd5Service
+from backend.flow.utils.mysql.mysql_act_playload import MysqlActPayload
 from backend.flow.utils.mysql.sqlfile_md5_check import (
     ParseFailure,
+    actuator_sql_files_md5,
     build_md5sum_script,
     compare_sqlfile_md5,
     parse_md5_lines,
 )
+from backend.ticket.constants import TicketType
 
 
 class _Data:
@@ -242,3 +245,40 @@ def test_schedule_mismatch_fails_after_fetching_each_ip_log():
     assert expected in error_text
     assert actual in error_text
     assert "确认没有问题后再跳过本节点" in error_text
+
+
+_MD5 = {"a.sql": "d41d8cd98f00b204e9800998ecf8427e"}
+
+
+def _import_extend(ticket_data):
+    payload = MysqlActPayload.__new__(MysqlActPayload)
+    payload.ticket_data = {
+        "sql_path": "/tmp/sql",
+        "file_path_suffix": "x",
+        "file_base_dir": "/tmp",
+        "charset": "utf8mb4",
+        "execute_objects": [],
+    }
+    payload.ticket_data.update(ticket_data)
+    payload.cluster = {"port": 3306}
+    payload.account = {}
+    return payload.get_import_sqlfile_payload(ip="127.0.0.1")["payload"]["extend"]
+
+
+def test_nonempty_md5_is_copied_into_import_payload():
+    extend = _import_extend({"sql_files_md5": _MD5, "ticket_type": TicketType.MYSQL_IMPORT_SQLFILE.value})
+
+    assert extend["sql_files_md5"] == _MD5
+
+
+def test_empty_missing_and_force_tickets_omit_md5_key():
+    cases = [
+        {"sql_files_md5": {}, "ticket_type": TicketType.MYSQL_IMPORT_SQLFILE.value},
+        {"ticket_type": TicketType.MYSQL_IMPORT_SQLFILE.value},
+        {"sql_files_md5": _MD5, "ticket_type": TicketType.MYSQL_FORCE_IMPORT_SQLFILE.value},
+        {"sql_files_md5": _MD5, "ticket_type": TicketType.TENDBCLUSTER_FORCE_IMPORT_SQLFILE.value},
+    ]
+
+    for ticket_data in cases:
+        assert "sql_files_md5" not in _import_extend(ticket_data)
+        assert actuator_sql_files_md5(ticket_data) is None
