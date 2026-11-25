@@ -249,7 +249,9 @@ class TargetSpiderConfig(BaseModel):
 
     tdbctl: TargetDBConfig = Field(description=_("tdbctl 节点"))
     mode: str = Field(default="", description=_("写入模式: proxy | direct"))
-    shards: list[TargetSpiderShard] = Field(default_factory=list, description=_("后端 MySQL 分片列表"))
+    shards: list[TargetSpiderShard] | None = Field(
+        default=None, description=_("后端 MySQL 分片列表，仅 direct 模式使用；proxy 模式不下发")
+    )
 
 
 class TargetConfig(BaseModel):

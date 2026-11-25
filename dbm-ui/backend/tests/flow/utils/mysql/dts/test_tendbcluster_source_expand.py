@@ -7,11 +7,7 @@ from django.test import SimpleTestCase
 from backend.db_meta.enums import ClusterType, InstanceRole
 from backend.flow.utils.mysql.dts.backup_helper import resolve_dest_worker_ip
 from backend.flow.utils.mysql.dts.constants import FullLoadEngine, MigrateTopology
-from backend.flow.utils.mysql.dts.migrate_helper import (
-    assign_source_workers,
-    build_create_source_request,
-    expand_tendbcluster_source_specs,
-)
+from backend.flow.utils.mysql.dts.migrate_helper import build_create_source_request
 from backend.flow.utils.mysql.dts.migrate_plan import (
     DtsMigratePlan,
     DtsTaskConfig,
@@ -19,6 +15,7 @@ from backend.flow.utils.mysql.dts.migrate_plan import (
     SourceSpec,
     SyncScope,
 )
+from backend.flow.utils.spider.dts.shard_helper import expand_tendbcluster_source_specs
 
 
 def _make_shard(shard_id: int, instance_id: int):
@@ -121,7 +118,7 @@ class ExpandTendbclusterSourceTest(SimpleTestCase):
         result = expand_tendbcluster_source_specs(src)
         self.assertEqual(result, [src])
 
-    @patch("backend.flow.utils.mysql.dts.migrate_helper._pick_shard_remote_instance")
+    @patch("backend.flow.utils.spider.dts.shard_helper._pick_shard_remote_instance")
     @patch("backend.flow.utils.mysql.dts.migrate_helper.Cluster.objects.get")
     def test_backup_locale_fails_before_shard_pick(self, mock_get, mock_pick):
         cluster = MagicMock()
@@ -137,8 +134,9 @@ class ExpandTendbclusterSourceTest(SimpleTestCase):
 
 
 class BuildCreateSourceSpiderTest(SimpleTestCase):
+    @patch("backend.flow.utils.mysql.dts.migrate_helper.resolve_dump_endpoint", return_value=None)
     @patch("backend.flow.utils.mysql.dts.migrate_helper.resolve_source_endpoint", return_value=("127.0.0.11", 3306))
-    def test_spider_shard_when_meta_present(self, _mock_ep):
+    def test_spider_shard_when_meta_present(self, _mock_ep, _mock_dump):
         cluster = MagicMock()
         cluster.id = 100
         cluster.cluster_type = ClusterType.TenDBCluster.value
@@ -158,8 +156,9 @@ class BuildCreateSourceSpiderTest(SimpleTestCase):
         self.assertEqual(req.source.spider.shard_index, 1)
         self.assertEqual(req.worker_name, "worker-2")
 
+    @patch("backend.flow.utils.mysql.dts.migrate_helper.resolve_dump_endpoint", return_value=None)
     @patch("backend.flow.utils.mysql.dts.migrate_helper.resolve_source_endpoint", return_value=("127.0.0.11", 3306))
-    def test_spider_without_meta_keeps_compat(self, _mock_ep):
+    def test_spider_without_meta_keeps_compat(self, _mock_ep, _mock_dump):
         cluster = MagicMock()
         cluster.cluster_type = ClusterType.TenDBCluster.value
         cluster.immute_domain = "spider.db.test"
@@ -167,43 +166,6 @@ class BuildCreateSourceSpiderTest(SimpleTestCase):
         req = build_create_source_request(src, cluster, user="u", password="p")
         self.assertEqual(req.source.cluster_type, "spider")
         self.assertIsNone(req.source.spider)
-
-
-class AssignSourceWorkersTest(SimpleTestCase):
-    def test_bind_one_to_one(self):
-        sources = [
-            SourceSpec(
-                cluster_id=1,
-                source_name="remote-1",
-                sync_scope=SyncScope(),
-                shard_index=1,
-                myloader=MyloaderSpec(),
-            ),
-            SourceSpec(
-                cluster_id=1,
-                source_name="remote-0",
-                sync_scope=SyncScope(),
-                shard_index=0,
-                myloader=MyloaderSpec(),
-            ),
-        ]
-        workers = [
-            {"name": "worker-a", "ip": "127.0.0.2"},
-            {"name": "worker-b", "ip": "127.0.0.3"},
-        ]
-        assign_source_workers(sources, workers)
-        by_name = {s.source_name: s for s in sources}
-        self.assertEqual(by_name["remote-0"].worker_name, "worker-a")
-        self.assertEqual(by_name["remote-0"].myloader.dest_worker_ip, "127.0.0.2")
-        self.assertEqual(by_name["remote-1"].worker_name, "worker-b")
-
-    def test_fail_when_workers_insufficient(self):
-        sources = [
-            SourceSpec(cluster_id=1, source_name="a", sync_scope=SyncScope(), shard_index=0),
-            SourceSpec(cluster_id=1, source_name="b", sync_scope=SyncScope(), shard_index=1),
-        ]
-        with self.assertRaises(ValueError):
-            assign_source_workers(sources, [{"name": "w1", "ip": "127.0.0.2"}])
 
 
 class ResolveDestWorkerIpTest(SimpleTestCase):

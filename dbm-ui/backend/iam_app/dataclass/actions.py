@@ -2667,6 +2667,18 @@ class ActionEnum:
         common_labels=[CommonActionLabel.BIZ_MAINTAIN],
     )
 
+    # TENDBCLUSTER_DTS_DATA_MIGRATE / TENDBCLUSTER_DTS_DATA_MIGRATE_RENAME 两个单据共用该独立权限点
+    TENDBCLUSTER_DTS_DATA_MIGRATE = ActionMeta(
+        id="tendbcluster_dts_data_migrate",
+        name=_("TenDBCluster DTS 数据迁移"),
+        name_en="tendbcluster_dts_data_migrate",
+        type="execute",
+        related_resource_types=[ResourceEnum.TENDBCLUSTER],
+        group=_("TenDBCluster"),
+        subgroup=_("数据处理"),
+        common_labels=[CommonActionLabel.BIZ_MAINTAIN],
+    )
+
     TENDBCLUSTER_MANAGE = ActionMeta(
         id="tendbcluster_manage",
         name=_("TenDBCluster 集群运维管理"),

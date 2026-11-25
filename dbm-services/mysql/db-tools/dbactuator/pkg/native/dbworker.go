@@ -372,12 +372,17 @@ func getIndexFromBinlogFile(fileName string) (seq int, err error) {
 
 // ShowMasterStatus 返回结构化的查询show slave status
 func (h *DbWorker) ShowMasterStatus() (resp MasterStatusResp, err error) {
+	return h.ShowMasterStatusContext(context.Background())
+}
+
+// ShowMasterStatusContext 同 ShowMasterStatus，支持 ctx 超时 / 取消；无结果时返回空结构且 err 为 nil
+func (h *DbWorker) ShowMasterStatusContext(ctx context.Context) (resp MasterStatusResp, err error) {
 	sqlStr := "show master status;"
 	if cmutil.MySQLVersionCompare(h.ServerVersion, "8.4.0") > 0 {
 		// show master status: is no longer support
 		sqlStr = "SHOW BINARY LOG STATUS;"
 	}
-	err = h.Queryxs(&resp, sqlStr)
+	err = sqlx.NewDb(h.Db, "mysql").Unsafe().GetContext(ctx, &resp, sqlStr)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return MasterStatusResp{}, nil

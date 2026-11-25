@@ -13,6 +13,7 @@ package dtsutil
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,13 @@ import (
 
 	"dbm-services/common/go-pubpkg/logger"
 )
+
+// IsTransportError HTTP 未拿到服务端响应（超时 / 连接失败 / 中断）。
+// 对停任务而言这是“结果未知”：服务端可能仍在执行，不能当作明确失败处理。
+func IsTransportError(err error) bool {
+	var uerr *url.Error
+	return errors.As(err, &uerr)
+}
 
 // StopTaskWhileLocked 在源表读锁仍被持有时停止任务。
 // 服务端 timeout_duration=15s，HTTP 客户端 20s。失败由调用方立即返回并 unlock，不在持锁状态下重试。

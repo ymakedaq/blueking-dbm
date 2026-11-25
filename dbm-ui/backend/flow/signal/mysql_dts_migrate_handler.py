@@ -208,3 +208,17 @@ def mysql_rename_migrate_callback_handler(root_id: str, node_id: str, status: St
     """MySQL 重命名迁移状态回调与终态清理。"""
     logger.info(_("执行 mysql_rename_migrate_callback_handler root_id={}").format(root_id))
     _handle_migrate_callback(root_id, node_id, status, ticket_id_from_signal=int(kwargs.get("ticket_id") or 0))
+
+
+@create_ticket_handler(TicketType.TENDBCLUSTER_DTS_DATA_MIGRATE)
+def tendbcluster_dts_migrate_callback_handler(root_id: str, node_id: str, status: StateType, **kwargs):
+    """TenDBCluster DTS 同名迁移状态回调与终态清理。"""
+    logger.info(_("执行 tendbcluster_dts_migrate_callback_handler root_id={}").format(root_id))
+    _handle_migrate_callback(root_id, node_id, status, ticket_id_from_signal=int(kwargs.get("ticket_id") or 0))
+
+
+@create_ticket_handler(TicketType.TENDBCLUSTER_DTS_DATA_MIGRATE_RENAME)
+def tendbcluster_dts_rename_migrate_callback_handler(root_id: str, node_id: str, status: StateType, **kwargs):
+    """TenDBCluster DTS 库改名迁移状态回调与终态清理。"""
+    logger.info(_("执行 tendbcluster_dts_rename_migrate_callback_handler root_id={}").format(root_id))
+    _handle_migrate_callback(root_id, node_id, status, ticket_id_from_signal=int(kwargs.get("ticket_id") or 0))

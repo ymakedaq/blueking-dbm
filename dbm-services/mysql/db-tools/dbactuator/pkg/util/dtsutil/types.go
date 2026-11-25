@@ -26,6 +26,22 @@ const (
 	LockWaitTimeoutSec = 5
 )
 
+// 切换轮询的公共默认值：加锁前预检 1s×30，持锁复核 0.5s×60、连续通过 3 次。
+const (
+	// StatusTimeoutSec 查询任务状态的 HTTP 超时
+	StatusTimeoutSec = defaultAPITimeoutSec
+	// DefaultPrecheckPollMax 加锁前预检最大轮询次数
+	DefaultPrecheckPollMax = 30
+	// PrecheckPollInterval 加锁前预检轮询间隔
+	PrecheckPollInterval = 1 * time.Second
+	// DefaultCatchupPollMax 持锁复核最大轮询次数（含首次）
+	DefaultCatchupPollMax = 60
+	// CatchupPollInterval 持锁复核轮询间隔
+	CatchupPollInterval = 500 * time.Millisecond
+	// DefaultCatchupRecheck 持锁复核连续通过次数
+	DefaultCatchupRecheck = 3
+)
+
 const (
 	// stopWhileLockedServerTimeout 持锁窗口内让 Master 放弃停止的上限。
 	stopWhileLockedServerTimeout = 15 * time.Second

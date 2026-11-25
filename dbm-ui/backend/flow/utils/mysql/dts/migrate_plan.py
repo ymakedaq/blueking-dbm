@@ -171,7 +171,7 @@ class SourceSpec:
     source_host: str | None = None
     backup_locale: str = ""
     myloader: MyloaderSpec | None = None
-    # 内部字段：供 expand_tendbcluster_source_specs / assign_source_workers 使用，不由现网 HA 单据填写
+    # 内部字段：由 expand_tendbcluster_source_specs 填充，不由现网 HA 单据填写
     shard_index: int | None = None
     shard_count: int | None = None
     spider_cluster_id: str = ""

@@ -12,9 +12,9 @@ from backend.components.mysqldtsapi.types import (
     Source,
     SourceDumpFrom,
 )
-from backend.flow.plugins.components.collections.mysql.dts.migrate.register_source import _require_dump_from_echo
 from backend.flow.utils.mysql.dts.migrate_helper import build_create_source_request, task_mode_runs_incremental
 from backend.flow.utils.mysql.dts.migrate_plan import SourceSpec, SyncScope
+from backend.flow.utils.mysql.dts.source_helper import require_dump_from_echo
 
 
 class TaskModeRunsIncrementalTest(SimpleTestCase):
@@ -138,12 +138,12 @@ class DumpFromEchoTest(SimpleTestCase):
             enable=True,
             dump_from={"host": "127.0.0.3", "port": 3306, "user": "u"},
         )
-        _require_dump_from_echo(want, got.dump_from)
+        require_dump_from_echo(want, got.dump_from)
 
     def test_missing_dump_from_fails(self):
         want = SourceDumpFrom(host="127.0.0.3", port=3306, user="u", password="p")
         with self.assertRaises(ValueError) as ctx:
-            _require_dump_from_echo(want, None)
+            require_dump_from_echo(want, None)
         self.assertIn("127.0.0.3:3306", str(ctx.exception))
 
 

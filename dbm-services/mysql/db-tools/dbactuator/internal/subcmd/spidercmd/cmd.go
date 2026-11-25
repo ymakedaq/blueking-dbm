@@ -34,6 +34,7 @@ func NewSpiderCommand() *cobra.Command {
 				clone_grants_from_file.NewCloneGrantsVerifyCreateCommand(),
 				clone_grants_from_file.NewCloneGrantsImportGrantCommand(),
 				clone_grants_from_file.NewCloneGrantsVerifyGrantCommand(),
+				NewSpiderDtsCutoverCommand(),
 			},
 		},
 	}

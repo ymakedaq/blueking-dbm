@@ -12,6 +12,7 @@ package dtsutil
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -70,6 +71,45 @@ func ValidateFlushSQLBudget(flushSQL string, maxAllowedPacket int64) error {
 	return nil
 }
 
+// flushClientSlack FLUSH 客户端超时相对 lock_wait_timeout 的余量，避免服务端已放弃而客户端仍挂起
+const flushClientSlack = 5 * time.Second
+
+// sessionSetTimeout 会话变量设置的超时，防止连接异常时卡在 SET 上
+const sessionSetTimeout = 5 * time.Second
+
+// CheckFlushSQLBudget 读取实例 max_allowed_packet 并校验 FLUSH 语句长度预算。
+func CheckFlushSQLBudget(db *sql.DB, flushSQL string) error {
+	var maxAllowedPacket int64
+	if err := db.QueryRow("SELECT @@max_allowed_packet").Scan(&maxAllowedPacket); err != nil {
+		return fmt.Errorf("读取 max_allowed_packet 失败: %w", err)
+	}
+	return ValidateFlushSQLBudget(flushSQL, maxAllowedPacket)
+}
+
+// FlushReadLock 在专用连接上设置会话 lock_wait_timeout，再执行 FLUSH ... WITH READ LOCK。
+// FLUSH 的客户端超时 = lock_wait_timeout + flushClientSlack；FLUSH 本身的错误原样返回，由调用方补充节点信息。
+func FlushReadLock(ctx context.Context, conn *sql.Conn, flushSQL string, lockWaitTimeoutSec int) error {
+	setCtx, setCancel := context.WithTimeout(ctx, sessionSetTimeout)
+	_, err := conn.ExecContext(setCtx, fmt.Sprintf("SET lock_wait_timeout = %d", lockWaitTimeoutSec))
+	setCancel()
+	if err != nil {
+		return fmt.Errorf("设置 lock_wait_timeout 失败: %w", err)
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, time.Duration(lockWaitTimeoutSec)*time.Second+flushClientSlack)
+	defer cancel()
+	_, err = conn.ExecContext(lockCtx, flushSQL)
+	return err
+}
+
+// UnlockTables 在持锁连接上执行 UNLOCK TABLES；conn 为空时直接返回。
+func UnlockTables(ctx context.Context, conn *sql.Conn) error {
+	if conn == nil {
+		return nil
+	}
+	_, err := conn.ExecContext(ctx, "UNLOCK TABLES")
+	return err
+}
+
 // LockSourceTables 连接源端、展开（或使用给定表）、单句表级 READ 锁。
 func LockSourceTables(ep Endpoint, scope *SyncScope, lockTables []TableItem) (*SourceLockConn, error) {
 	inst := native.InsObject{
@@ -103,12 +143,7 @@ func LockSourceTables(ep Endpoint, scope *SyncScope, lockTables []TableItem) (*S
 	if err != nil {
 		return nil, err
 	}
-
-	var maxAllowedPacket int64
-	if err = worker.Db.QueryRow("SELECT @@max_allowed_packet").Scan(&maxAllowedPacket); err != nil {
-		return nil, fmt.Errorf("读取 max_allowed_packet 失败: %w", err)
-	}
-	if err = ValidateFlushSQLBudget(flushSQL, maxAllowedPacket); err != nil {
+	if err = CheckFlushSQLBudget(worker.Db, flushSQL); err != nil {
 		return nil, err
 	}
 
@@ -119,17 +154,11 @@ func LockSourceTables(ep Endpoint, scope *SyncScope, lockTables []TableItem) (*S
 	}
 	sl.LockConn = lockConn
 
-	if _, err = lockConn.ExecContext(ctx, fmt.Sprintf("SET lock_wait_timeout = %d", LockWaitTimeoutSec)); err != nil {
-		return nil, fmt.Errorf("设置 lock_wait_timeout 失败: %w", err)
-	}
-
 	logger.Info(
 		"源端 %s:%d 对 %d 张表执行单句 FLUSH TABLES ... WITH READ LOCK (sql_bytes=%d)",
 		ep.Host, ep.Port, len(tables), len(flushSQL),
 	)
-	lockCtx, cancel := context.WithTimeout(ctx, time.Duration(LockWaitTimeoutSec+5)*time.Second)
-	defer cancel()
-	if _, err = lockConn.ExecContext(lockCtx, flushSQL); err != nil {
+	if err = FlushReadLock(ctx, lockConn, flushSQL, LockWaitTimeoutSec); err != nil {
 		return nil, fmt.Errorf("源端加表读锁失败 %s:%d: %w", ep.Host, ep.Port, err)
 	}
 
@@ -142,8 +171,7 @@ func UnlockSource(sl *SourceLockConn) error {
 	if sl == nil || sl.LockConn == nil {
 		return nil
 	}
-	_, err := sl.LockConn.ExecContext(context.Background(), "UNLOCK TABLES")
-	if err != nil {
+	if err := UnlockTables(context.Background(), sl.LockConn); err != nil {
 		logger.Error("源端 %s:%d UNLOCK TABLES 失败: %s", sl.Endpoint.Host, sl.Endpoint.Port, err.Error())
 		return err
 	}

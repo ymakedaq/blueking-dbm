@@ -34,7 +34,6 @@ from backend.components.mysqldtsapi.types import (
     TargetConfig,
     TargetDBConfig,
     TargetSpiderConfig,
-    TargetSpiderShard,
     Task,
     TaskTableFilter,
     TaskTableFilterTable,
@@ -56,12 +55,12 @@ from backend.flow.utils.mysql.dts.migrate_plan import (
     DtsMigratePlan,
     DtsTaskConfig,
     DtsTaskSpec,
-    MyloaderSpec,
     SourceSpec,
     SyncScope,
-    copy_myloader_spec,
     to_dts_glob,
 )
+from backend.flow.utils.mysql.dts.source_helper import storage_by_instance_id, storage_by_instance_role
+from backend.flow.utils.spider.dts import endpoint_helper as spider_endpoint_helper
 
 logger = logging.getLogger("flow")
 
@@ -91,10 +90,8 @@ def _resolve_slave_source_endpoint(cluster: Cluster) -> tuple[str, int]:
 def resolve_cluster_master_endpoint(cluster: Cluster) -> tuple[str, int]:
     """源集群主库。不读 backup_locale，也不读 source_host / source_instance_id / source_instance_role。"""
     if cluster.cluster_type == ClusterType.TenDBCluster.value:
-        ins = cluster.storageinstance_set.filter(instance_role=InstanceRole.REMOTE_MASTER).first()
-        if not ins:
-            raise ValueError(_("集群 {} 未找到可用的 Remote Master 源实例").format(cluster.id))
-        return ins.machine.ip, ins.port
+        # TenDBCluster 源端点统一收敛到 spider/dts endpoint_helper
+        return spider_endpoint_helper.resolve_spider_master_endpoint(cluster)
     if cluster.cluster_type == ClusterType.TenDBSingle.value:
         ins = cluster.storageinstance_set.filter(instance_role=InstanceRole.ORPHAN).first()
         if not ins:
@@ -110,6 +107,9 @@ def resolve_cluster_master_endpoint(cluster: Cluster) -> tuple[str, int]:
 
 def effective_backup_locale(source_spec: SourceSpec, cluster: Cluster, full_load_engine: str = "") -> str:
     """没传 backup_locale 时，TenDBHA 默认 slave。myloader 的全量来自备份，这个字段不生效。"""
+    if spider_endpoint_helper.is_tendbcluster_cluster(cluster):
+        # TenDBCluster 源：分片 source 默认从 remote slave 导出，详见 spider/dts endpoint_helper
+        return spider_endpoint_helper.effective_spider_backup_locale(source_spec, cluster, full_load_engine)
     if (full_load_engine or "") == FullLoadEngine.MYLOADER.value:
         return ""
     role = (source_spec.backup_locale or "").strip()
@@ -126,6 +126,9 @@ def resolve_dump_endpoint(
     source_spec: SourceSpec, cluster: Cluster, full_load_engine: str = ""
 ) -> tuple[str, int] | None:
     """导出地址。生效角色为 slave 时返回备库。复制、加锁、校验仍用主库。"""
+    if spider_endpoint_helper.is_tendbcluster_cluster(cluster):
+        # 分片 source：该分片 remote slave；缺失直接失败（提单期已校验，此处兜底）
+        return spider_endpoint_helper.resolve_spider_dump_endpoint(source_spec, cluster, full_load_engine)
     role = effective_backup_locale(source_spec, cluster, full_load_engine)
     if role == "slave" and not (source_spec.backup_locale or "").strip():
         source_spec.backup_locale = "slave"
@@ -134,14 +137,15 @@ def resolve_dump_endpoint(
     _reject_pinned_source_with_role(source_spec)
     if role not in ("master", "slave"):
         raise ValueError(_("backup_locale 只能是 master 或 slave"))
-    if cluster.cluster_type == ClusterType.TenDBCluster.value:
-        raise ValueError(_("集群 {} 不支持通过 backup_locale 选择实例").format(cluster.id))
     if role != "slave":
         return None
     return _resolve_slave_source_endpoint(cluster)
 
 
 def resolve_source_endpoint(source_spec: SourceSpec, cluster: Cluster, full_load_engine: str = "") -> tuple[str, int]:
+    if spider_endpoint_helper.is_tendbcluster_cluster(cluster):
+        # TenDBCluster 源：分片 source 固定该分片 remote master 拉 binlog
+        return spider_endpoint_helper.resolve_spider_source_endpoint(source_spec, cluster, full_load_engine)
     if effective_backup_locale(source_spec, cluster, full_load_engine):
         resolve_dump_endpoint(source_spec, cluster, full_load_engine)
         return resolve_cluster_master_endpoint(cluster)
@@ -151,17 +155,10 @@ def resolve_source_endpoint(source_spec: SourceSpec, cluster: Cluster, full_load
             return ip, int(port)
         return source_spec.source_host, 3306
     if source_spec.source_instance_id:
-        ins = _storage_by_instance_id(cluster, source_spec.source_instance_id)
+        ins = storage_by_instance_id(cluster, source_spec.source_instance_id)
         return ins.machine.ip, ins.port
     if source_spec.source_instance_role:
-        ins = _storage_by_instance_role(cluster, source_spec.source_instance_role)
-        return ins.machine.ip, ins.port
-
-    # TenDBCluster：Source 必须落在 Remote 存储节点，不能用 Spider 代理探测/拉 binlog
-    if cluster.cluster_type == ClusterType.TenDBCluster.value:
-        ins = cluster.storageinstance_set.filter(instance_role=InstanceRole.REMOTE_MASTER).first()
-        if not ins:
-            raise ValueError(_("集群 {} 未找到可用的 Remote Master 源实例").format(cluster.id))
+        ins = storage_by_instance_role(cluster, source_spec.source_instance_role)
         return ins.machine.ip, ins.port
 
     # TenDBSingle：仅 orphan 存储实例
@@ -177,127 +174,6 @@ def resolve_source_endpoint(source_spec: SourceSpec, cluster: Cluster, full_load
     if not ins:
         raise ValueError(_("集群 {} 未找到可用的 Master 源实例").format(cluster.id))
     return ins.machine.ip, ins.port
-
-
-def _storage_by_instance_id(cluster: Cluster, instance_id: int) -> StorageInstance:
-    try:
-        return StorageInstance.objects.get(id=instance_id, cluster=cluster)
-    except StorageInstance.DoesNotExist as exc:
-        raise ValueError(_("集群 {} 的源实例 {} 不存在").format(cluster.id, instance_id)) from exc
-
-
-def _storage_by_instance_role(cluster: Cluster, role: str) -> StorageInstance:
-    try:
-        return cluster.storageinstance_set.get(instance_role=role)
-    except StorageInstance.DoesNotExist as exc:
-        raise ValueError(_("集群 {} 未找到角色为 {} 的源实例").format(cluster.id, role)) from exc
-    except StorageInstance.MultipleObjectsReturned as exc:
-        raise ValueError(_("集群 {} 的角色 {} 匹配到多条源实例").format(cluster.id, role)) from exc
-
-
-def _pick_shard_remote_instance(shard, instance_role=None) -> StorageInstance:
-    """分片连接端点：默认 Remote Master（ejector）；指定 remote_slave 时用 receiver。"""
-    receiver = shard.storage_instance_tuple.receiver
-    ejector = shard.storage_instance_tuple.ejector
-    role = getattr(instance_role, "value", instance_role) or ""
-    if role == InstanceRole.REMOTE_SLAVE.value:
-        if receiver is None:
-            raise ValueError(_("分片 {} 未找到 Remote Slave").format(shard.shard_id))
-        return receiver
-    if ejector is None:
-        raise ValueError(_("分片 {} 未找到 Remote Master").format(shard.shard_id))
-    return ejector
-
-
-def expand_tendbcluster_source_specs(
-    source: SourceSpec,
-    task_cfg: DtsTaskConfig | None = None,
-) -> list[SourceSpec]:
-    """将 TenDBCluster 源展开为 N 个 SourceSpec（一分片一 Source）。
-
-    已带 shard_index 的 source 视为手工展开，原样返回。
-    非 TenDBCluster 原样返回。
-    """
-    if source.shard_index is not None:
-        return [source]
-
-    cluster = Cluster.objects.get(id=source.cluster_id)
-    if cluster.cluster_type != ClusterType.TenDBCluster.value:
-        return [source]
-
-    if (source.backup_locale or "").strip():
-        raise ValueError(_("集群 {} 不支持通过 backup_locale 选择实例").format(cluster.id))
-
-    shards = list(cluster.tendbclusterstorageset_set.all().order_by("shard_id"))
-    if not shards:
-        raise ValueError(_("TenDBCluster {} 无分片元数据，无法展开 Source").format(cluster.id))
-
-    shard_count = len(shards)
-    spider_cluster_id = source.spider_cluster_id or cluster.immute_domain
-    base_name = source.source_name or "source"
-    use_myloader = False
-    if task_cfg and task_cfg.full_load_engine == FullLoadEngine.MYLOADER.value:
-        use_myloader = True
-    if source.myloader is not None or (task_cfg and task_cfg.myloader is not None):
-        use_myloader = True
-
-    expanded: list[SourceSpec] = []
-    for shard in shards:
-        ins = _pick_shard_remote_instance(shard, source.source_instance_role)
-        myloader = copy_myloader_spec(source.myloader)
-        if myloader is None and task_cfg:
-            myloader = copy_myloader_spec(task_cfg.myloader)
-        if use_myloader:
-            if myloader is None:
-                myloader = MyloaderSpec()
-            myloader.shard_id = shard.shard_id
-        expanded.append(
-            SourceSpec(
-                cluster_id=source.cluster_id,
-                source_name=f"{base_name}-{shard.shard_id}",
-                sync_scope=source.sync_scope,
-                source_instance_id=ins.id,
-                source_instance_role=None,
-                source_host=None,
-                myloader=myloader,
-                shard_index=shard.shard_id,
-                shard_count=shard_count,
-                spider_cluster_id=spider_cluster_id,
-                worker_name=source.worker_name or "",
-            )
-        )
-    return expanded
-
-
-def assign_source_workers(
-    sources: list[SourceSpec],
-    worker_nodes: list[dict],
-) -> None:
-    """按 shard_index / 顺序为一对一绑定 worker_name 与 dest_worker_ip。"""
-    if not sources:
-        return
-    if len(worker_nodes) < len(sources):
-        raise ValueError(
-            _("DTS Worker 数量({}) 少于 Source 数量({})，TenDBCluster 源需一分片一 Worker").format(len(worker_nodes), len(sources))
-        )
-    ordered = sorted(
-        enumerate(sources),
-        key=lambda item: (
-            item[1].shard_index is None,
-            item[1].shard_index if item[1].shard_index is not None else item[0],
-        ),
-    )
-    for bind_idx, (unused_orig_idx, src) in enumerate(ordered):
-        node = worker_nodes[bind_idx]
-        name = node.get("name") or node.get("worker_name") or ""
-        ip = node.get("ip") or ""
-        if not name:
-            raise ValueError(_("Worker 节点缺少 name，无法绑定 Source {}").format(src.source_name))
-        src.worker_name = name
-        if src.myloader is None:
-            continue
-        if not src.myloader.dest_worker_ip and ip:
-            src.myloader.dest_worker_ip = ip
 
 
 def _append_grant_target(
@@ -452,16 +328,32 @@ def sync_scope_to_table_filter(sync_scope: SyncScope) -> TaskTableFilter | None:
     )
 
 
-def _build_table_migrate_rules(source_name: str, sync_scope: SyncScope) -> list[TableMigrateRule]:
-    """仅由 table_routes 生成带 target 的改名规则；同名白名单不再写入 table_migrate_rule。"""
+def _build_table_migrate_rules(
+    source_name: str, sync_scope: SyncScope, schema_route_empty_table: bool = False
+) -> list[TableMigrateRule]:
+    """仅由 table_routes 生成带 target 的改名规则；同名白名单不再写入 table_migrate_rule。
+
+    schema_route_empty_table=True（cluster_to_cluster 改名）时，库级路由的 source.table 下发空字符串
+    而不是 "*"：DTS 侧空表名才是库级规则（task_converters.go:637-651、regexpr_router.go:79-104），
+    "*" 会让库本身（建库/删库 DDL）匹配不到规则，目标端多出空的原名库。
+    """
     rules: list[TableMigrateRule] = []
     for route in sync_scope.table_routes:
+        source_table = route.source_table_name()
+        if (
+            schema_route_empty_table
+            and (route.target_db or "").strip()
+            and not (route.target_table or "").strip()
+            and source_table in ("", "*")
+        ):
+            # 库级改名：source.table 必须是空串（字段 required），target 只给 schema
+            source_table = ""
         rules.append(
             TableMigrateRule(
                 source=TableMigrateSource(
                     source_name=route.source_name or source_name,
                     schema=route.source_schema(),
-                    table=route.source_table_name(),
+                    table=source_table,
                 ),
                 target=TableMigrateTarget(
                     schema=route.target_db or None,
@@ -785,10 +677,8 @@ def _build_cluster_target_config(
     spider_master = _resolve_spider_master(cluster)
     host, port = resolve_cluster_target_spider_endpoint(cluster, target_spider)
     tdbctl_host, tdbctl_port = _resolve_tdbctl_endpoint(cluster, spider_master)
-    remote_masters = cluster.storageinstance_set.filter(instance_role=InstanceRole.REMOTE_MASTER)
-    shards = [
-        TargetSpiderShard(host=ins.machine.ip, port=ins.port, user=user, password=password) for ins in remote_masters
-    ]
+    # DTS 当前只支持 proxy 模式，proxy 下 spider.shards 非空会被拒绝（dm/config/spider_config.go:148）；
+    # 分片路由由 Spider 完成，这里只传 tdbctl，不下发 shards。
     spider_cfg = TargetSpiderConfig(
         tdbctl=TargetDBConfig(
             host=tdbctl_host,
@@ -797,7 +687,6 @@ def _build_cluster_target_config(
             password=password,
         ),
         mode="proxy",
-        shards=shards,
     )
     return TargetConfig(
         host=host,
@@ -961,8 +850,10 @@ def build_dts_task_request(
     table_rules: list[TableMigrateRule] = []
     binlog_filters: dict[str, BinlogFilterRuleEntry] = {}
     table_filters: dict[str, TaskTableFilter] = {}
+    # cluster_to_cluster 改名：库级路由 source.table 下发空串（02 第 2.2 节），其余单据输出不变
+    schema_route_empty_table = plan.migrate_type == MigrateType.CLUSTER_TO_CLUSTER.value
     for src in task_spec.sources:
-        table_rules.extend(_build_table_migrate_rules(src.source_name, src.sync_scope))
+        table_rules.extend(_build_table_migrate_rules(src.source_name, src.sync_scope, schema_route_empty_table))
         binlog_filters.update(_build_binlog_filter_rules(src.sync_scope))
         table_filter = sync_scope_to_table_filter(src.sync_scope)
         if table_filter is not None:
@@ -970,6 +861,9 @@ def build_dts_task_request(
 
     if not table_rules and not table_filters:
         raise ValueError(_("同步范围为空，拒绝创建 DTS 任务（需要 table_filter 或 table_routes）"))
+    for src in task_spec.sources:
+        if src.source_name not in table_filters:
+            raise ValueError(_("source {} 缺少 table_filter，将变成整源迁移，拒绝创建 DTS 任务").format(src.source_name))
 
     target_cfg = task_spec.target_config
     if not target_cfg or not target_cfg.host:

@@ -1047,6 +1047,21 @@ class MysqlActPayload(PayloadHandler, ProxyActPayload, TBinlogDumperActPayload):
             },
         }
 
+    def get_spider_dts_cutover_payload(self, **kwargs) -> dict:
+        """TenDBCluster DTS 安全切换：在 dts-master 上执行 spider dts-cutover。
+
+        extend 载荷放在 kwargs['cluster']['spider_dts_cutover']（由 spider/dts cutover_helper 组装）。
+        """
+        extend = (self.cluster or {}).get("spider_dts_cutover") or {}
+        return {
+            "db_type": DBActuatorTypeEnum.Spider.value,
+            "action": DBActuatorActionEnum.DtsCutover.value,
+            "payload": {
+                "general": {"runtime_account": self.account},
+                "extend": extend,
+            },
+        }
+
     def get_partition_payload(self, **kwargs) -> dict:
         """
         表分区

@@ -10,9 +10,12 @@ specific language governing permissions and limitations under the License.
 
 from backend.db_meta.enums import ClusterType
 from backend.flow.engine.bamboo.scene.mysql.mysql_machine_clear_flow import ClearMysqlMachineFlow
+from backend.flow.engine.bamboo.scene.mysql.revoke.mysql_dts_migrate_revoke_flow import MysqlDtsMigrateRevokeFlow
+from backend.flow.engine.bamboo.scene.mysql.validate.mysql_dts_migrate_validator import MysqlDtsMigrateFlowValidator
 from backend.flow.engine.bamboo.scene.mysql.validate.mysql_rollback_validator import TenDbClusterRollbackFlowValidator
 from backend.flow.engine.bamboo.scene.spider.append_deploy_ctl_flow import AppendDeployCTLFlow
 from backend.flow.engine.bamboo.scene.spider.db_table_backup import TenDBClusterDBTableBackupFlow
+from backend.flow.engine.bamboo.scene.spider.dts.spider_dts_data_migrate import TenDBClusterDtsDataMigrateFlow
 from backend.flow.engine.bamboo.scene.spider.full_backup import TenDBClusterFullBackupFlow
 from backend.flow.engine.bamboo.scene.spider.import_sqlfile_flow import ImportSQLFlow
 from backend.flow.engine.bamboo.scene.spider.remote_master_fail_over import RemoteMasterFailOverFlow
@@ -361,3 +364,12 @@ class SpiderController(BaseController):
         """
         flow = UpgradeTdbctlFlow(root_id=self.root_id, data=self.ticket_data)
         flow.run()
+
+    @revoke_with(MysqlDtsMigrateRevokeFlow)
+    @validates_with(MysqlDtsMigrateFlowValidator)
+    def tendbcluster_dts_data_migrate_scene(self):
+        """
+        TenDBCluster DTS 数据迁移（同名 / 改名共用场景，migrate_type=cluster_to_cluster）
+        """
+        flow = TenDBClusterDtsDataMigrateFlow(root_id=self.root_id, data=self.ticket_data)
+        flow.run_flow()

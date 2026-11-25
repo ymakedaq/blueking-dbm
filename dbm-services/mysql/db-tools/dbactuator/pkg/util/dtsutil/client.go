@@ -11,10 +11,18 @@
 package dtsutil
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
+	"time"
+
+	"dbm-services/common/go-pubpkg/logger"
 )
+
+// defaultAPITimeoutSec Master OpenAPI 查询默认超时
+const defaultAPITimeoutSec = 30
 
 // BuildMasterAPIURL 拼装 Master OpenAPI URL（本机直连 dts_master_addr）。
 func BuildMasterAPIURL(dtsMasterAddr, apiPath string) (string, error) {
@@ -29,9 +37,46 @@ func BuildMasterAPIURL(dtsMasterAddr, apiPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("解析 dts_master_addr 失败: %w", err)
 	}
-	u.Path = apiPath
+	decodedPath, err := url.PathUnescape(apiPath)
+	if err != nil {
+		return "", fmt.Errorf("非法 apiPath: %w", err)
+	}
+	u.Path = decodedPath
+	u.RawPath = ""
+	if decodedPath != apiPath {
+		u.RawPath = apiPath
+	}
 	u.RawQuery = ""
 	return u.String(), nil
+}
+
+// getMasterAPIJSON GET Master OpenAPI，HTTP 200 时把响应体解析到 out；what 用于日志与错误文案。
+func getMasterAPIJSON(dtsMasterAddr, apiPath string, timeoutSec int, what string, out any) error {
+	if timeoutSec <= 0 {
+		timeoutSec = defaultAPITimeoutSec
+	}
+	u, err := BuildMasterAPIURL(dtsMasterAddr, apiPath)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return fmt.Errorf("构造%s请求失败: %w", what, err)
+	}
+	logger.Info("查询 DTS %s: %s", what, req.URL.String())
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("查询%s失败: %w", what, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("查询%s HTTP %d", what, resp.StatusCode)
+	}
+	if err = json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("解析%s JSON 失败: %w", what, err)
+	}
+	return nil
 }
 
 func truncateOut(s string) string {

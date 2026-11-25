@@ -299,6 +299,12 @@ class TicketType(StrStructuredEnum):
         "MYSQL_HA_TO_CLUSTER_MIGRATE", _("MySQL HA到Cluster数据迁移"), _("数据处理")
     )
     MYSQL_DTS_DATA_MIGRATE_RENAME = TicketEnumField("MYSQL_DTS_DATA_MIGRATE_RENAME", _("MySQL DTS 库改名迁移"), _("数据处理"))
+    TENDBCLUSTER_DTS_DATA_MIGRATE = TicketEnumField(
+        "TENDBCLUSTER_DTS_DATA_MIGRATE", _("TenDB Cluster DTS 同名迁移"), _("数据处理")
+    )
+    TENDBCLUSTER_DTS_DATA_MIGRATE_RENAME = TicketEnumField(
+        "TENDBCLUSTER_DTS_DATA_MIGRATE_RENAME", _("TenDB Cluster DTS 库改名迁移"), _("数据处理")
+    )
     MYSQL_SINGLE_RENAME_DATABASE = TicketEnumField("MYSQL_SINGLE_RENAME_DATABASE", _("MySQL 单节点DB重命名"), _("集群维护"))  # noqa
     MYSQL_OPEN_AREA = TicketEnumField("MYSQL_OPEN_AREA", _("MySQL 开区"), _("克隆开区"))
     MYSQL_DATA_MIGRATE = TicketEnumField("MYSQL_DATA_MIGRATE", _("MySQL DB数据克隆"), _("克隆与开区"), register_iam=True)

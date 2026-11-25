@@ -52,12 +52,14 @@ from backend.utils.time import datetime2str
 
 logger = logging.getLogger("root")
 
-# 这三类单据在 inner 启动时预占 MysqlDtsInfo.ToDo。中止或预占后失败必须把 ToDo 收掉，
+# 这些单据在 inner 启动时预占 MysqlDtsInfo.ToDo。中止或预占后失败必须把 ToDo 收掉，
 # 因为此时经常还没有 pipeline，REVOKED 信号不会发出。
 _MYSQL_DTS_MIGRATE_TICKET_TYPES = (
     TicketType.MYSQL_DTS_DATA_MIGRATE,
     TicketType.MYSQL_HA_TO_CLUSTER_MIGRATE,
     TicketType.MYSQL_DTS_DATA_MIGRATE_RENAME,
+    TicketType.TENDBCLUSTER_DTS_DATA_MIGRATE,
+    TicketType.TENDBCLUSTER_DTS_DATA_MIGRATE_RENAME,
 )
 
 
@@ -187,6 +189,12 @@ class InnerFlow(BaseTicketFlow):
                 migrate_type = "mysql_to_mysql"
             elif ticket_type == TicketType.MYSQL_HA_TO_CLUSTER_MIGRATE:
                 migrate_type = "ha_to_cluster"
+            elif ticket_type in (
+                TicketType.TENDBCLUSTER_DTS_DATA_MIGRATE,
+                TicketType.TENDBCLUSTER_DTS_DATA_MIGRATE_RENAME,
+            ):
+                # 不能沿用 rename 留空按行推断：TenDBCluster 源不在推断函数支持范围内
+                migrate_type = "cluster_to_cluster"
             else:
                 migrate_type = ""
             MysqlDtsInfo.check_exclusive_and_reserve(

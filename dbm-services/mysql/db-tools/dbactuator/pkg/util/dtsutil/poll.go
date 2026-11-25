@@ -24,8 +24,28 @@ const (
 	pollAbort
 )
 
-func decideCatchupPoll(items []TaskStatusItem, snapshots map[string]BinlogCoord) (pollAction, error) {
+// StatusCheck 轮询中的附加硬性检查（如 source 集合必须完整）：返回错误即终止轮询，不再重试。
+type StatusCheck func(items []TaskStatusItem) error
+
+func runStatusChecks(items []TaskStatusItem, checks []StatusCheck) error {
+	for _, check := range checks {
+		if check == nil {
+			continue
+		}
+		if err := check(items); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decideCatchupPoll(
+	items []TaskStatusItem, snapshots map[string]BinlogCoord, checks []StatusCheck,
+) (pollAction, error) {
 	if err := TaskReportError(items); err != nil {
+		return pollAbort, err
+	}
+	if err := runStatusChecks(items, checks); err != nil {
 		return pollAbort, err
 	}
 	if err := CheckSnapshotCatchup(items, snapshots); err != nil {
@@ -34,11 +54,14 @@ func decideCatchupPoll(items []TaskStatusItem, snapshots map[string]BinlogCoord)
 	return pollPass, nil
 }
 
-func decideReadyBeforeLock(items []TaskStatusItem) (pollAction, error) {
+func decideReadyBeforeLock(items []TaskStatusItem, checks []StatusCheck) (pollAction, error) {
 	if err := TaskReportError(items); err != nil {
 		return pollAbort, err
 	}
 	if err := ValidateTaskRunning(&TaskStatusListResponse{Data: items}); err != nil {
+		return pollAbort, err
+	}
+	if err := runStatusChecks(items, checks); err != nil {
 		return pollAbort, err
 	}
 	if err := SourcesQuietEnoughToLock(items); err != nil {
@@ -47,11 +70,12 @@ func decideReadyBeforeLock(items []TaskStatusItem) (pollAction, error) {
 	return pollPass, nil
 }
 
-// PollReadyBeforeLock 在加锁之前等到各源 Running 且 SBM==0；报错或非 Running 立刻失败。
+// PollReadyBeforeLock 在加锁之前等到各源 Running 且 SBM==0；报错、非 Running 或 checks 失败立刻失败。
 func PollReadyBeforeLock(
 	fetch func() ([]TaskStatusItem, error),
 	pollMax int,
 	sleep func(),
+	checks ...StatusCheck,
 ) error {
 	if pollMax < 1 {
 		pollMax = 1
@@ -65,7 +89,7 @@ func PollReadyBeforeLock(
 		if ferr != nil {
 			return fmt.Errorf("查询任务状态失败: %w", ferr)
 		}
-		action, cerr := decideReadyBeforeLock(items)
+		action, cerr := decideReadyBeforeLock(items, checks)
 		switch action {
 		case pollAbort:
 			return fmt.Errorf("任务状态检查失败: %w", cerr)
@@ -85,12 +109,14 @@ func PollReadyBeforeLock(
 }
 
 // PollUntilCaughtUp 持锁后按加锁快照复核追平，连续通过 recheck 次才返回本轮 status。
+// 任务报错或 checks 失败立即终止。
 func PollUntilCaughtUp(
 	fetch func() ([]TaskStatusItem, error),
 	snapshots map[string]BinlogCoord,
 	recheck int,
 	pollMax int,
 	sleep func(),
+	checks ...StatusCheck,
 ) ([]TaskStatusItem, error) {
 	if recheck < 1 {
 		recheck = 1
@@ -110,7 +136,7 @@ func PollUntilCaughtUp(
 			return nil, fmt.Errorf("查询任务状态失败: %w", ferr)
 		}
 		statusItems = items
-		action, cerr := decideCatchupPoll(items, snapshots)
+		action, cerr := decideCatchupPoll(items, snapshots, checks)
 		switch action {
 		case pollAbort:
 			return nil, fmt.Errorf("任务状态检查失败: %w", cerr)

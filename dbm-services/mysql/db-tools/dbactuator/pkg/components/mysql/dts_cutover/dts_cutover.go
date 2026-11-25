@@ -26,12 +26,13 @@ import (
 	"dbm-services/mysql/db-tools/dbactuator/pkg/util/dtsutil"
 )
 
+// 轮询默认值与 spider dts-cutover 共用 dtsutil 中的定义。
 const (
-	defaultCatchupRecheck  = 3
-	defaultPrecheckPollMax = 30
-	precheckPollInterval   = 1 * time.Second
-	defaultCatchupPollMax  = 60
-	catchupPollInterval    = 500 * time.Millisecond
+	defaultCatchupRecheck  = dtsutil.DefaultCatchupRecheck
+	defaultPrecheckPollMax = dtsutil.DefaultPrecheckPollMax
+	precheckPollInterval   = dtsutil.PrecheckPollInterval
+	defaultCatchupPollMax  = dtsutil.DefaultCatchupPollMax
+	catchupPollInterval    = dtsutil.CatchupPollInterval
 )
 
 // Comp DTS cutover 组件。
@@ -108,6 +109,11 @@ func (p *Params) catchupPollMax() int {
 		return p.CatchupPollMax
 	}
 	return defaultCatchupPollMax
+}
+
+// fetchStatus 查询本次任务状态列表（预检 / 持锁复核 / 停任务后采位点共用）。
+func (p *Params) fetchStatus() ([]dtsutil.TaskStatusItem, error) {
+	return dtsutil.FetchTaskStatusItems(p.DtsMasterAddr, p.TaskName, dtsutil.StatusTimeoutSec)
 }
 
 // Init 参数校验与默认值。
@@ -195,11 +201,11 @@ func (c *Comp) Run() error {
 	}
 
 	// 加锁后立刻拍 master 快照；后续轮询 syncer>=快照（失败则 unlock via defer，禁止 stop）
-	snapResp, ferr := dtsutil.FetchTaskStatus(p.DtsMasterAddr, p.TaskName, 30)
+	snapItems, ferr := p.fetchStatus()
 	if ferr != nil {
 		return fmt.Errorf("加锁后拉取 status 失败，无法建立位点快照（不执行 stop）: %w", ferr)
 	}
-	lockSnapshots, serr := dtsutil.BuildLockMasterSnapshots(snapResp.Data)
+	lockSnapshots, serr := dtsutil.BuildLockMasterSnapshots(snapItems)
 	if serr != nil {
 		return fmt.Errorf("建立加锁位点快照失败（不执行 stop）: %w", serr)
 	}
@@ -208,13 +214,7 @@ func (c *Comp) Run() error {
 	}
 
 	statusItems, perr := dtsutil.PollUntilCaughtUp(
-		func() ([]dtsutil.TaskStatusItem, error) {
-			resp, ferr := dtsutil.FetchTaskStatus(p.DtsMasterAddr, p.TaskName, 30)
-			if ferr != nil {
-				return nil, ferr
-			}
-			return resp.Data, nil
-		},
+		p.fetchStatus,
 		lockSnapshots,
 		p.CatchupRecheck,
 		p.catchupPollMax(),
@@ -231,10 +231,10 @@ func (c *Comp) Run() error {
 
 	// 尽量再采一次停任务后的位点；失败则回退持锁复核时的快照
 	finalItems := statusItems
-	if resp, ferr := dtsutil.FetchTaskStatus(p.DtsMasterAddr, p.TaskName, 30); ferr != nil {
+	if items, ferr := p.fetchStatus(); ferr != nil {
 		logger.Warn("停任务后再次拉取 status 失败，使用持锁复核快照: %s", ferr.Error())
-	} else if len(resp.Data) > 0 {
-		finalItems = resp.Data
+	} else if len(items) > 0 {
+		finalItems = items
 	}
 
 	out := dtsutil.BuildPositionOutput(p.TaskName, finalItems)

@@ -11,45 +11,29 @@
 package dtsutil
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
-
-	"dbm-services/common/go-pubpkg/logger"
 )
 
 // FetchTaskStatus HTTP GET http://{dts_master_addr}/api/v1/tasks/{task_name}/status
 func FetchTaskStatus(dtsMasterAddr, taskName string, timeoutSec int) (*TaskStatusListResponse, error) {
-	if timeoutSec <= 0 {
-		timeoutSec = 30
+	var out TaskStatusListResponse
+	apiPath := fmt.Sprintf("/api/v1/tasks/%s/status", url.PathEscape(taskName))
+	if err := getMasterAPIJSON(dtsMasterAddr, apiPath, timeoutSec, "任务状态", &out); err != nil {
+		return nil, err
 	}
-	u, err := BuildMasterAPIURL(dtsMasterAddr, fmt.Sprintf("/api/v1/tasks/%s/status", url.PathEscape(taskName)))
+	return &out, nil
+}
+
+// FetchTaskStatusItems 同 FetchTaskStatus，只返回 data 列表（便于直接作为 Poll* 的 fetch）。
+func FetchTaskStatusItems(dtsMasterAddr, taskName string, timeoutSec int) ([]TaskStatusItem, error) {
+	resp, err := FetchTaskStatus(dtsMasterAddr, taskName, timeoutSec)
 	if err != nil {
 		return nil, err
 	}
-
-	client := &http.Client{Timeout: time.Duration(timeoutSec) * time.Second}
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		return nil, fmt.Errorf("构造 status 请求失败: %w", err)
-	}
-	logger.Info("查询 DTS 任务状态: %s", req.URL.String())
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("查询任务状态失败: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("查询任务状态 HTTP %d", resp.StatusCode)
-	}
-	var out TaskStatusListResponse
-	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("解析任务状态 JSON 失败: %w", err)
-	}
-	return &out, nil
+	return resp.Data, nil
 }
 
 // BuildLockMasterSnapshots 加锁后从 taskStatus 按 source 记录当时的 master 位点快照。
@@ -196,6 +180,55 @@ func SourcesQuietEnoughToLock(items []TaskStatusItem) error {
 		}
 		if ss.SecondsBehindMaster != 0 {
 			return fmt.Errorf("source %s 未追平: sbm=%d", src, ss.SecondsBehindMaster)
+		}
+	}
+	return nil
+}
+
+// ClassifyStages 返回（全部 Stopped/Finished，全部 Running）；空列表两者均为 false。
+func ClassifyStages(items []TaskStatusItem) (allStopped, allRunning bool) {
+	if len(items) == 0 {
+		return false, false
+	}
+	stopped, running := 0, 0
+	for _, item := range items {
+		switch item.Stage {
+		case TaskStageStopped, TaskStageFinished:
+			stopped++
+		case TaskStageRunning:
+			running++
+		}
+	}
+	return stopped == len(items), running == len(items)
+}
+
+// SummarizeStages 生成 "source=stage,..." 摘要，用于日志与错误文案。
+func SummarizeStages(items []TaskStatusItem) string {
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, fmt.Sprintf("%s=%s", StatusSourceKey(item), item.Stage))
+	}
+	return strings.Join(parts, ",")
+}
+
+// CheckSourceSet 本轮 status 返回的 source 集合必须与 want 完全一致：缺少或多出都报错。
+// 用于多 source 任务（如 TenDBCluster 每分片一个 source）防止子集追平假成功。
+func CheckSourceSet(items []TaskStatusItem, want map[string]struct{}) error {
+	if len(items) == 0 {
+		return fmt.Errorf("任务状态为空")
+	}
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		seen[StatusSourceKey(item)] = struct{}{}
+	}
+	for name := range want {
+		if _, ok := seen[name]; !ok {
+			return fmt.Errorf("任务缺少 source %s", name)
+		}
+	}
+	for name := range seen {
+		if _, ok := want[name]; !ok {
+			return fmt.Errorf("任务含预期之外的 source %s", name)
 		}
 	}
 	return nil

@@ -20,17 +20,9 @@ from backend.db_meta.models import Cluster
 from backend.flow.plugins.components.collections.common.base_service import BaseService
 from backend.flow.utils.mysql.dts.migrate_helper import build_create_source_request
 from backend.flow.utils.mysql.dts.migrate_plan import dts_migrate_plan_from_dict, dts_task_spec_from_dict
+from backend.flow.utils.mysql.dts.source_helper import require_dump_from_echo
 
 logger = logging.getLogger("flow")
-
-
-def _require_dump_from_echo(want, got) -> None:
-    """请求带了导出从库时，返回里必须还是同一台。密码回包会被打码，不比。"""
-    if want is None:
-        return
-    same = got is not None and got.host == want.host and int(got.port) == int(want.port) and got.user == want.user
-    if not same:
-        raise ValueError(_("创建 source 的返回结果里没有导出地址 {}:{}").format(want.host, want.port))
 
 
 class MysqlDtsRegisterSourceService(BaseService):
@@ -70,7 +62,7 @@ class MysqlDtsRegisterSourceService(BaseService):
 
         for source_spec in task_spec.sources:
             cluster = Cluster.objects.get(id=source_spec.cluster_id)
-            # source 级 worker_name 优先；kwargs 全局 worker_name 兜底（Cluster 源单据可先调用 assign_source_workers）
+            # source 级 worker_name 优先；kwargs 全局 worker_name 兜底
             full_load_engine = ""
             if task_spec.dts_task_config:
                 full_load_engine = task_spec.dts_task_config.full_load_engine or ""
@@ -100,7 +92,7 @@ class MysqlDtsRegisterSourceService(BaseService):
                     json.dumps(redact_passwords(resp.model_dump(mode="json")), ensure_ascii=False)
                 )
             )
-            _require_dump_from_echo(request.source.dump_from, resp.dump_from)
+            require_dump_from_echo(request.source.dump_from, resp.dump_from)
             source_name = resp.source_name or source_spec.source_name
             registered.append(source_name)
             self.log_info(_("注册 DTS Source 成功: {}").format(source_name))

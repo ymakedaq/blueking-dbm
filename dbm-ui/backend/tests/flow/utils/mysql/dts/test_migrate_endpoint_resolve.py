@@ -278,7 +278,7 @@ class ResolveSourceEndpointTest(SimpleTestCase):
             [_ins("127.0.0.14", 20000, InstanceRole.REMOTE_MASTER.value)],
         )
         spec = SourceSpec(cluster_id=1, source_name="s1", sync_scope=SyncScope(), backup_locale="master")
-        with patch("backend.flow.utils.mysql.dts.migrate_helper._pick_shard_remote_instance") as mock_pick:
+        with patch("backend.flow.utils.spider.dts.shard_helper._pick_shard_remote_instance") as mock_pick:
             with self.assertRaises(ValueError) as ctx:
                 resolve_source_endpoint(spec, cluster)
         self.assertIn("backup_locale", str(ctx.exception))
@@ -705,8 +705,9 @@ class ClusterTargetSpiderResolveTest(SimpleTestCase):
         self.assertEqual(specified_cfg.port, secondary.port)
         self.assertEqual(default_cfg.spider.tdbctl.host, specified_cfg.spider.tdbctl.host)
         self.assertEqual(default_cfg.spider.tdbctl.port, specified_cfg.spider.tdbctl.port)
-        self.assertEqual(len(default_cfg.spider.shards), len(specified_cfg.spider.shards))
-        self.assertEqual(default_cfg.spider.shards[0].host, specified_cfg.spider.shards[0].host)
+        # proxy 模式下 DTS 拒绝非空 shards（分片路由由 Spider 完成），配置不下发 shards
+        self.assertIsNone(default_cfg.spider.shards)
+        self.assertIsNone(specified_cfg.spider.shards)
 
     def test_build_dts_task_request_uses_target_spider(self):
         from backend.flow.utils.mysql.dts.constants import DtsLifecycleMode, MigrateTopology

@@ -126,3 +126,4 @@ class MigrateTopology(StrStructuredEnum):
 class MigrateType(StrStructuredEnum):
     MYSQL_TO_MYSQL = EnumField("mysql_to_mysql", _lazy("mysql_to_mysql"))
     HA_TO_CLUSTER = EnumField("ha_to_cluster", _lazy("ha_to_cluster"))
+    CLUSTER_TO_CLUSTER = EnumField("cluster_to_cluster", _lazy("cluster_to_cluster"))

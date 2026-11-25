@@ -19,8 +19,6 @@ import (
 	"dbm-services/mysql/db-tools/dbactuator/pkg/util/dtsutil"
 )
 
-const precheckStatusTimeoutSec = 30
-
 // PreCheck 切换前预检：源连通、表可展开且存在，再轮询到各源 Running 且 SBM==0。
 // 本步骤不执行 FLUSH TABLES ... WITH READ LOCK，也不 stop、不探测权限。
 // 多源按顺序 fail-fast。
@@ -43,13 +41,9 @@ func (c *Comp) PreCheck() error {
 		}
 	}
 
-	if err := dtsutil.PollReadyBeforeLock(func() ([]dtsutil.TaskStatusItem, error) {
-		resp, ferr := dtsutil.FetchTaskStatus(p.DtsMasterAddr, p.TaskName, precheckStatusTimeoutSec)
-		if ferr != nil {
-			return nil, ferr
-		}
-		return resp.Data, nil
-	}, defaultPrecheckPollMax, func() { time.Sleep(precheckPollInterval) }); err != nil {
+	if err := dtsutil.PollReadyBeforeLock(
+		p.fetchStatus, defaultPrecheckPollMax, func() { time.Sleep(precheckPollInterval) },
+	); err != nil {
 		return fmt.Errorf("预检追平失败（未加锁）: %w", err)
 	}
 	logger.Info("预检通过: sources=%d task=%s", len(p.SourceEndpoints), p.TaskName)
