@@ -14,7 +14,7 @@ from backend import env
 from backend.flow.plugins.components.collections.common.base_service import BaseService
 from backend.flow.utils.base.flow_output import BaseFlowOutputSerializer, FlowOutputHandler
 from backend.flow.utils.mysql.act_payload.mixed.account_mixed.mysql_account_mixed import MySQLAccountMixed
-from backend.flow.utils.mysql.check_client_connections import check_client_connection
+from backend.flow.utils.mysql.check_client_connections import check_client_connection, exclude_dbha_sessions
 
 # --------------------------
 # Helpers for formatted output
@@ -118,6 +118,8 @@ class CheckClientConnService(BaseService):
         kwargs = data.get_one_of_inputs("kwargs")
         global_data = data.get_one_of_inputs("global_data")
 
+        raw_dbha_user = kwargs.get("dbha_user")
+        passed_dbha_user = str(raw_dbha_user).strip() if raw_dbha_user else ""
         results = check_client_connection(
             bk_cloud_id=kwargs["bk_cloud_id"],
             instances=kwargs["check_instances"],
@@ -126,6 +128,8 @@ class CheckClientConnService(BaseService):
             filter_hosts=kwargs.get("filter_hosts", []),
             # CheckClientConnKwargs 字段名为 long_process_time，需与 dataclass 对齐
             long_query_time=kwargs.get("long_process_time", -1),
+            # 空字符串保持执行期再解析 DBHA 账号
+            dbha_user=passed_dbha_user or None,
         )
         process_infos = []
         for res in results:
@@ -137,9 +141,12 @@ class CheckClientConnService(BaseService):
             infos = res["cmd_results"][0]["table_data"]
             if kwargs.get("is_proxy", False):
                 # 这里做对proxy连接做优化，如果出现dbha账号的链接过滤
-                dbha_user = MySQLAccountMixed.mysql_dbha_account(kwargs["bk_cloud_id"])["user"]
+                dbha_user = passed_dbha_user
+                if not dbha_user:
+                    dbha_user = MySQLAccountMixed.mysql_dbha_account(kwargs["bk_cloud_id"])["user"]
                 self.log_info(f"filter dbha accounts:[{dbha_user}]")
-                infos[:] = [d for d in infos if d.get("User") != dbha_user]
+                if infos:
+                    infos[:] = exclude_dbha_sessions(infos, dbha_user)
 
             if infos:
                 self.log_error(f"[{res['address']}] There are also {len(infos)} not-system threads")

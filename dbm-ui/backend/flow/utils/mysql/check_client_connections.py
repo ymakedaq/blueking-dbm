@@ -22,6 +22,7 @@ def check_client_connection(
     is_proxy: bool = False,
     filter_hosts: Optional[List[str]] = None,
     long_query_time: int = -1,
+    dbha_user: str = None,
 ):
     """
     通过drs接口检测实例是否存在用户线程
@@ -31,6 +32,7 @@ def check_client_connection(
     @param is_proxy: 本地检测的节点是否是mysql_proxy节点， 默认不是
     @param filter_hosts: 需要忽略的来源主机列表，支持 ip 或 ip:port
     @param long_query_time: 超过多少秒的连接视为长连接，默认-1表示不按时间过滤
+    @param dbha_user: 组流程时已取到的 DBHA 探测用户名。None 表示仍按原逻辑解析。
     """
     if is_proxy:
         # proxy 查询
@@ -57,7 +59,10 @@ def check_client_connection(
     # 对于tendb-cluster集群的实例，这里不考虑过滤内置账号的session，因为执行ddl时候，实例会存在内置账号session
     # 过滤会有风险
     users = ",".join(
-        ["'" + str(x) + "'" for x in MYSQL_SYS_USER + admin_user_name_list + get_mysql_sys_users(bk_cloud_id)]
+        [
+            "'" + str(x) + "'"
+            for x in MYSQL_SYS_USER + admin_user_name_list + get_mysql_sys_users(bk_cloud_id, dbha_user=dbha_user)
+        ]
     )
     if long_query_time > 0:
         is_filter_sleep = True
@@ -82,3 +87,11 @@ def check_client_connection(
     )
 
     return res
+
+
+def exclude_dbha_sessions(infos, dbha_user: str):
+    """从 proxy processlist 结果里去掉 DBHA 探测账号的会话。"""
+    probe_user = (dbha_user or "").strip()
+    if not infos or not probe_user:
+        return infos or []
+    return [row for row in infos if row.get("User") != probe_user]

@@ -513,6 +513,8 @@ class CheckClientConnKwargs:
     is_proxy: bool = False
     long_process_time: int = -1
     filter_hosts: list = field(default_factory=list)
+    # 组流程时写入的 DBHA 探测用户名。空字符串表示执行时再按原逻辑解析。
+    dbha_user: str = ""
 
 
 @dataclass

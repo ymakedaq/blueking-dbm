@@ -54,6 +54,7 @@ from backend.flow.plugins.components.collections.mysql.trans_flies import TransF
 from backend.flow.plugins.components.collections.mysql.verify_checksum import VerifyChecksumComponent
 from backend.flow.utils.common_act_dataclass import InitCheckKwargs
 from backend.flow.utils.mysql.common.mysql_cluster_info import get_mysql_init_os_timezone_kwargs
+from backend.flow.utils.mysql.get_mysql_sys_user import get_dbha_probe_user
 from backend.flow.utils.mysql.mysql_act_dataclass import (
     AuthorizeKwargs,
     CheckClientConnKwargs,
@@ -317,7 +318,9 @@ def check_sub_flow(
         raise Exception(_("构建子流程失败，联系系统管理员, verify_checksum_tuples is null"))
 
     act_list = []
+    dbha_probe_user = ""
     if is_check_client_conn:
+        dbha_probe_user = get_dbha_probe_user(cluster.bk_cloud_id)
         for inst in check_client_conn_inst:
             if is_proxy:
                 act_name = _("[Proxy]{}的客户端连接情况".format(inst))
@@ -329,7 +332,10 @@ def check_sub_flow(
                     "act_component_code": CheckClientConnComponent.code,
                     "kwargs": asdict(
                         CheckClientConnKwargs(
-                            bk_cloud_id=cluster.bk_cloud_id, check_instances=[inst], is_proxy=is_proxy
+                            bk_cloud_id=cluster.bk_cloud_id,
+                            check_instances=[inst],
+                            is_proxy=is_proxy,
+                            dbha_user=dbha_probe_user,
                         )
                     ),
                 }
@@ -426,6 +432,7 @@ def check_long_active_process_sub_flow(
     @param long_trx_min_age_seconds: InnoDB 事务开始时间早于当前多少秒则视为长事务并阻断流程
     """
     act_list = []
+    dbha_probe_user = get_dbha_probe_user(cluster.bk_cloud_id)
     for inst in node_insts:
         # Base title includes the instance identifier
         act_name = _("检测{}MySQL的活跃长连接情况").format(inst)
@@ -444,6 +451,7 @@ def check_long_active_process_sub_flow(
                         is_filter_sleep=True,
                         long_process_time=long_process_time,
                         filter_hosts=filter_hosts,
+                        dbha_user=dbha_probe_user,
                     )
                 ),
             }

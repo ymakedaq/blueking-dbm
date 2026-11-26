@@ -15,8 +15,29 @@ from pipeline.component_framework.component import Component
 
 from backend.components import DRSApi
 from backend.constants import IP_PORT_DIVIDER
+from backend.flow.consts import MYSQL_SYS_USER, UserName
 from backend.flow.plugins.components.collections.common.base_service import BaseService
 from backend.flow.plugins.components.collections.mysql.check_client_connections import _format_process_infos
+from backend.flow.utils.mysql.get_mysql_sys_user import get_dbha_probe_user
+
+
+def build_check_processlist_sql(dbha_user: str = "") -> str:
+    """拼检查链接用的 processlist 语句。探测用户名由节点自己解析后传入。"""
+    users = [
+        *MYSQL_SYS_USER,
+        UserName.YW.value,
+        UserName.MONITOR.value,
+        UserName.ADMIN.value,
+        UserName.REPL.value,
+    ]
+    probe_user = (dbha_user or "").strip()
+    if probe_user and probe_user not in users:
+        users.append(probe_user.replace("'", "''"))
+    quoted_users = ",".join("'{}'".format(user) for user in users)
+    return (
+        "select * from information_schema.processlist where User not in ({}) "
+        "and User!=SUBSTRING_INDEX(current_user(),'@',1)"
+    ).format(quoted_users)
 
 
 class MySQLCheckProcesslistService(BaseService):
@@ -29,14 +50,13 @@ class MySQLCheckProcesslistService(BaseService):
         self.log_info(_("传入参数:{}").format(kwargs))
         self.log_info(_("如果检查不通过,根据您实际需求来选择跳过此节点。"))
         instance = "{}{}{}".format(kwargs["instance_ip"], IP_PORT_DIVIDER, kwargs["instance_port"])
+        dbha_user = get_dbha_probe_user(kwargs["bk_cloud_id"])
+        if dbha_user:
+            self.log_info(_("忽略 DBHA 探测账号: {}").format(dbha_user))
 
         rpc_info = {
             "addresses": [instance],
-            "cmds": [
-                """select * from information_schema.processlist  where
-User not in ('event_scheduler', 'system user','yw', 'MONITOR', 'ADMIN','repl')
-and User!=SUBSTRING_INDEX(current_user(),'@',1)"""
-            ],
+            "cmds": [build_check_processlist_sql(dbha_user)],
             "force": False,
             "bk_cloud_id": kwargs["bk_cloud_id"],
         }
