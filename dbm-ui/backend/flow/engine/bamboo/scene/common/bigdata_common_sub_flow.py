@@ -16,6 +16,7 @@ from django.utils.translation import gettext as _
 
 from backend import env
 from backend.components import CCApi
+from backend.constants import DEFAULT_BK_CLOUD_ID
 from backend.db_meta.models.machine import DeviceClass
 from backend.flow.engine.bamboo.scene.common.builder import SubBuilder
 from backend.flow.engine.bamboo.scene.common.install_plugins import install_nodeman_plugins
@@ -53,16 +54,17 @@ def make_idle_check_act(
     return None
 
 
-def make_sa_init_act(ips: list, bk_biz_id: int, bk_host_ids: List[int] = None):
+def make_sa_init_act(ips: list, bk_biz_id: int, bk_host_ids: List[int] = None, bk_cloud_id: int = 0):
     """
     构造 机器初始化 子流程
     :param ips: ip数组
     :param bk_biz_id: 机器所属业务ID
     :param bk_host_ids: 机器ID列表, 当前非必传
+    :param bk_cloud_id: 管控区域ID，非直连管控区域(bk_cloud_id != 0)不做sa初始化
     :return:
     """
-    # 执行sa初始化
-    if env.SA_INIT_TEMPLATE_ID and ips:
+    # 执行sa初始化，仅针对直连管控区域主机
+    if env.SA_INIT_TEMPLATE_ID and ips and bk_cloud_id == DEFAULT_BK_CLOUD_ID:
         sa_init_act = {
             "act_name": _("执行sa初始化"),
             "act_component_code": SaInitComponent.code,
@@ -126,7 +128,7 @@ def new_machine_common_sub_flow(
     if idle_check_act:
         act_exist = True
         sub_pipeline.add_parallel_acts([idle_check_act])
-    sa_init_act = make_sa_init_act(ips=new_ips, bk_biz_id=machine_biz_id)
+    sa_init_act = make_sa_init_act(ips=new_ips, bk_biz_id=machine_biz_id, bk_cloud_id=bk_cloud_id)
     if sa_init_act:
         act_exist = True
         sub_pipeline.add_parallel_acts([sa_init_act])

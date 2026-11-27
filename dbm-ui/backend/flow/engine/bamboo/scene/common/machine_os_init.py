@@ -47,7 +47,7 @@ from backend.flow.plugins.components.collections.common.operate_host_bklog_colle
 )
 from backend.flow.plugins.components.collections.common.resource_replenish import HCMResourceReplenishComponent
 from backend.flow.plugins.components.collections.common.sa_idle_check import CheckMachineIdleComponent
-from backend.flow.plugins.components.collections.common.sa_init import SaInitComponent
+from backend.flow.plugins.components.collections.common.sa_init import SaInitComponent, is_direct_zone_host
 from backend.flow.plugins.components.collections.common.transfer_host_service import TransferHostServiceComponent
 from backend.flow.plugins.components.collections.common.transfer_host_to_pool import TransferHostToPoolComponent
 from backend.flow.utils.base.flow_output import BaseFlowOutputSerializer, FlowOutputHandler
@@ -219,16 +219,20 @@ class ImportResourceInitStepFlow(object):
 
         # 在执行sa初始化
         if env.SA_INIT_TEMPLATE_ID:
-            # 执行sa初始化
-            p.add_act(
-                act_name=_("执行sa初始化"),
-                act_component_code=SaInitComponent.code,
-                kwargs={
-                    "ips": [host["ip"] for host in host_list],
-                    "bk_biz_id": bk_biz_id,
-                    "account_name": account_name,
-                },
-            )
+            # 非直连管控区域(bk_cloud_id != 0)的主机不做sa初始化，编排期直接过滤；
+            # host_list 为空(HCM补货编排期，主机在执行期从 trans_data 补充)时仍挂节点，由执行期组件过滤
+            sa_init_ips = [host["ip"] for host in host_list if is_direct_zone_host(host)]
+            if sa_init_ips or not host_list:
+                # 执行sa初始化
+                p.add_act(
+                    act_name=_("执行sa初始化"),
+                    act_component_code=SaInitComponent.code,
+                    kwargs={
+                        "ips": sa_init_ips,
+                        "bk_biz_id": bk_biz_id,
+                        "account_name": account_name,
+                    },
+                )
 
         # 主机 OS 初始化：/etc/hosts 由 INIT_OS_HOSTS 决定，时间同步由 INIT_OS_TIMESYNC 决定。
         # 两者都没有时不挂节点。Windows 不跑。
